@@ -1,0 +1,23 @@
+# Ignore local files
+.env
+credentials.json
+*.db
+*.db-journal
+
+# Ignore git files
+.git
+.gitignore
+
+# Ignore Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore documentation
+*.md
+!README.md
+
+# Ignore IDE
+.vscode
+.idea
