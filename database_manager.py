@@ -211,6 +211,32 @@ class DatabaseManager:
             logger.error(f"Failed to get not agreed users: {e}")
             return []
 
+    def get_unagreed_members(self, group_id: int, version: str = COC_VERSION) -> List[int]:
+        """
+        Get all user IDs in a group that have NOT agreed to the specified version.
+        This includes users who have agreed to a previous version and newly discovered users.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # Get IDs of everyone who HAS agreed to the current version
+                cursor.execute('''
+                    SELECT user_id FROM agreements WHERE group_id = ? AND coc_version = ?
+                ''', (group_id, version))
+                agreed_user_ids = {row['user_id'] for row in cursor.fetchall()}
+
+                # Get IDs of ALL users known in that group
+                cursor.execute('''
+                    SELECT DISTINCT user_id FROM agreements WHERE group_id = ?
+                ''', (group_id,))
+                all_known_user_ids = {row['user_id'] for row in cursor.fetchall()}
+
+                # Return the difference
+                return list(all_known_user_ids - agreed_user_ids)
+        except Exception as e:
+            logger.error(f"Failed to get unagreed members: {e}")
+            return []
+
     def export_data(self, group_id: Optional[int] = None) -> List[Dict]:
         """
         Export all data from the database.
@@ -291,11 +317,13 @@ class DatabaseManager:
                     SELECT 1 FROM agreements WHERE user_id = ? AND group_id = ?
                 ''', (user_id, group_id))
                 if cursor.fetchone() is None:
-                    # Insert a placeholder record. This will not count as an agreement.
-                    # We can identify these by a null coc_version or a special value.
-                    # For simplicity, we just add them. When they agree, the record will be updated.
-                    # This is a conceptual placeholder. A better approach might be a separate `members` table.
-                    # But for this use case, we can infer membership from their presence.
-                    logger.info(f"Discovered new user {user_id} in group {group_id}")
+                    # Insert a placeholder record for the discovered user.
+                    # This user has NOT agreed. 'agreed_at' and 'coc_version' are placeholder values.
+                    # This record makes them "known" to the bot for commands like /restrict_existing.
+                    cursor.execute('''
+                        INSERT INTO agreements (user_id, group_id, username, full_name, agreed_at, coc_version)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (user_id, group_id, '', '', datetime.utcnow().isoformat(), 'discovered'))
+                    logger.info(f"Discovered and recorded new user {user_id} in group {group_id}")
         except Exception as e:
             logger.error(f"Failed to discover user {user_id} in group {group_id}: {e}")
