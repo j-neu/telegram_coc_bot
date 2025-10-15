@@ -1,139 +1,66 @@
 # Telegram Code of Conduct Agreement Bot
 
-A self-hosted Telegram bot (designed for Raspberry Pi) that ensures every group member explicitly agrees to the group's Code of Conduct before being allowed to post messages.
+A self-hosted Telegram bot that ensures every group member explicitly agrees to the group's Code of Conduct before being allowed to post messages.
 
 ## Features
 
-- **New Member Onboarding**: Automatically restricts new members until they agree to the CoC.
-- **Power Recovery**: Checks for unagreed members on startup (handles power outages/restarts).
-- **Existing Member Onboarding**: A suite of admin commands to manage agreement for existing members.
-- **SQLite Database**: Lightweight and local storage.
-- **Admin Commands**: Comprehensive tools for monitoring and managing agreements.
-- **Version Control**: Track different CoC versions and require re-agreement when updated.
-- **Dry-Run Mode**: Test commands without actually restricting users.
+- **Gatekeeper Enforcement**: Automatically deletes messages from and restricts any user who has not agreed to the current CoC. This applies to both new and existing members.
+- **Direct Agreement**: A simple, one-click agreement process that happens directly from a pinned message in your group.
+- **SQLite Database**: Lightweight and local storage for agreements.
+- **Admin Commands**: Essential tools for monitoring agreements.
+
+## How It Works
+
+1.  **Gatekeeper**: The bot checks every message. If a user has not agreed to the CoC, their message is deleted, they are restricted, and the bot attempts to DM them with instructions.
+2.  **Onboarding Message**: An admin uses the `/post_onboarding` command to create a message with an "Agree" button. This message should be pinned.
+3.  **Agreement**: Any user (new or existing) clicks the "Agree" button on the pinned message. The bot records their agreement and grants them speaking permissions.
 
 ## Prerequisites
 
-### Hardware
-- Raspberry Pi (any model with network access)
-- MicroSD card (16GB+)
-- Power supply
+- Raspberry Pi (or any Linux server)
+- Python 3.10+
+- Telegram Bot Token & Your Admin User ID
 
-### Software
-- Raspberry Pi OS Lite (installed on SD card)
-- Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-- Your Telegram User ID (from [@userinfobot](https://t.me/userinfobot))
+## Quick Start
 
-## Quick Start (Raspberry Pi)
-
-### 1. Setup Pi & Connect
-- Flash "Raspberry Pi OS Lite" to your SD card using the Raspberry Pi Imager.
-- In the imager settings, enable SSH, set a username/password, and configure WiFi.
-- Boot the Pi and SSH into it: `ssh YOUR_USERNAME@YOUR_PI_HOSTNAME.local`
-
-### 2. Install Bot
+### 1. Install
 ```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install dependencies
-sudo apt install -y python3 python3-pip git python3-venv
-
-# Clone repository
 git clone https://github.com/YOUR_USERNAME/telegram_coc_bot.git
 cd telegram_coc_bot
-
-# Create virtual environment and install packages
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure Bot
-Create a `.env` file (`nano .env`) and add your configuration:
+### 2. Configure
+Create a `.env` file (`nano .env`):
 ```
-BOT_TOKEN=your_bot_token_from_botfather
+BOT_TOKEN=your_bot_token
 ADMIN_IDS=your_telegram_user_id
 COC_VERSION=1.0
 COC_LINK=https://your-code-of-conduct-url
-STORAGE_TYPE=sqlite
-DRY_RUN=false
 ```
 
-### 4. Run Manually for Testing
-```bash
-# Make sure you are in the virtual environment
-source venv/bin/activate 
-# Run the bot
-python3 bot.py
-```
-Press `Ctrl+C` to stop.
-
-### 5. Auto-Start on Boot (Systemd)
+### 3. Run as a Service
 Create a service file: `sudo nano /etc/systemd/system/telegram-coc-bot.service`
-```ini
-[Unit]
-Description=Telegram Code of Conduct Bot
-After=network.target
+(See `RASPBERRY_PI_DEPLOY.md` for the full template)
 
-[Service]
-Type=simple
-User=YOUR_PI_USERNAME
-WorkingDirectory=/home/YOUR_PI_USERNAME/telegram_coc_bot
-ExecStart=/home/YOUR_PI_USERNAME/telegram_coc_bot/venv/bin/python3 /home/YOUR_PI_USERNAME/telegram_coc_bot/bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-Enable and start the service:
+Then enable and start it:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable telegram-coc-bot
 sudo systemctl start telegram-coc-bot
-sudo systemctl status telegram-coc-bot
 ```
-
-### 6. Add Bot to Telegram Group
-1. Add your bot to the Telegram group.
-2. Make it an admin with the **"Restrict Members"** permission.
 
 ## Usage
 
-### New Members
-New members are automatically restricted and prompted to agree to the CoC.
+1.  **Add Bot to Group**: Make it an admin with **"Restrict Members"** and **"Delete Messages"** permissions.
+2.  **Post and Pin**: As an admin, type `/post_onboarding` in the group. Pin the message the bot creates.
+3.  **Done**: The bot will now automatically handle all users.
 
-### Onboarding Existing Members
-The bot features a "gatekeeper" function that automatically enforces the CoC on all active members.
-
-**Automatic Enforcement (Gatekeeper):**
-The moment an existing member who has not agreed to the CoC sends a message, the bot will:
-1.  Delete their message.
-2.  Restrict their ability to send more messages.
-3.  Send them a private message explaining why and providing the CoC agreement prompt.
-
-This ensures all members must agree before they can participate.
-
-**Manual Admin Tools:**
-While the gatekeeper is automatic, admins have manual tools for proactive management:
--   Use `/sendcode_group` to post a public CoC prompt, making everyone aware of the rules.
--   Use `/restrict_existing` to proactively restrict all members who have not yet agreed, without waiting for them to send a message.
--   Use `/sendcode_dm` to send a direct reminder to all known, unagreed members.
-
-### Admin Commands
+## Admin Commands
 | Command | Description |
 |---|---|
-| `/start` | Send CoC agreement prompt (anyone can use). |
-| `/whoagreed` | List all users who have agreed to the current CoC version. |
-| `/restrict_existing` | Proactively restricts all known, unagreed members. |
-| `/sendcode_group` | Sends a public CoC agreement message to the group. |
-| `/sendcode_dm` | Sends a private DM to all known, unagreed members. |
-| `/setversion <version>`| Displays instructions for updating the CoC version. |
-| `/export` | Views agreement statistics and recent agreements. |
-
-## Managing Your Bot
-
-- **View Logs**: `sudo journalctl -u telegram-coc-bot -f`
-- **Restart Bot**: `sudo systemctl restart telegram-coc-bot`
-- **Stop Bot**: `sudo systemctl stop telegram-coc-bot`
+| `/post_onboarding` | Posts the pinnable message for users to agree. |
+| `/whoagreed` | Lists users who have agreed to the current CoC. |
+| `/setversion <v>` | Sets a new CoC version, requiring all users to re-agree. |

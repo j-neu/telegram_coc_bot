@@ -72,7 +72,7 @@ class DatabaseManager:
             # Create index for faster lookups
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_user_group
-                ON agreements(user_id, group_id, coc_version)
+                ON agreements(user_id, group_id)
             ''')
 
             logger.info("Database initialized successfully")
@@ -88,17 +88,6 @@ class DatabaseManager:
     ) -> bool:
         """
         Record a user's agreement to the CoC.
-
-        Args:
-            user_id: Telegram user ID
-            username: Telegram username
-            full_name: User's full name
-            group_id: Telegram group ID
-            group_name: Group name
-            version: CoC version agreed to
-
-        Returns:
-            True if successful, False otherwise
         """
         try:
             agreed_at = datetime.utcnow().isoformat()
@@ -112,7 +101,7 @@ class DatabaseManager:
                 ''', (user_id, username or '', full_name or '', group_id,
                       group_name or '', agreed_at, version))
 
-            logger.info(f"Recorded agreement for user {user_id} in group {group_id}")
+            logger.info(f"Recorded agreement for user {user_id} in group {group_id} with version {version}")
             return True
         except Exception as e:
             logger.error(f"Failed to record agreement: {e}")
@@ -126,14 +115,6 @@ class DatabaseManager:
     ) -> bool:
         """
         Check if a user has agreed to the CoC for a specific group and version.
-
-        Args:
-            user_id: Telegram user ID
-            group_id: Telegram group ID
-            version: CoC version to check
-
-        Returns:
-            True if user has agreed, False otherwise
         """
         try:
             with self._get_connection() as conn:
@@ -155,13 +136,6 @@ class DatabaseManager:
     ) -> List[Dict]:
         """
         Get all users who have agreed to the CoC in a specific group.
-
-        Args:
-            group_id: Telegram group ID
-            version: CoC version to check
-
-        Returns:
-            List of user records who have agreed
         """
         try:
             with self._get_connection() as conn:
@@ -178,37 +152,6 @@ class DatabaseManager:
                 return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get agreed users: {e}")
-            return []
-
-    def get_all_not_agreed(
-        self,
-        group_id: int,
-        all_member_ids: List[int],
-        version: str = COC_VERSION
-    ) -> List[int]:
-        """
-        Get all users who have NOT agreed to the CoC in a specific group.
-
-        Args:
-            group_id: Telegram group ID
-            all_member_ids: List of all member IDs in the group
-            version: CoC version to check
-
-        Returns:
-            List of user IDs who have not agreed
-        """
-        try:
-            agreed_users = self.get_all_agreed(group_id, version)
-            agreed_user_ids = {user['user_id'] for user in agreed_users}
-
-            not_agreed = [
-                user_id for user_id in all_member_ids
-                if user_id not in agreed_user_ids
-            ]
-
-            return not_agreed
-        except Exception as e:
-            logger.error(f"Failed to get not agreed users: {e}")
             return []
 
     def get_unagreed_members(self, group_id: int, version: str = COC_VERSION) -> List[int]:
@@ -240,12 +183,6 @@ class DatabaseManager:
     def export_data(self, group_id: Optional[int] = None) -> List[Dict]:
         """
         Export all data from the database.
-
-        Args:
-            group_id: Optional group ID to filter by
-
-        Returns:
-            All agreement data as list of dictionaries
         """
         try:
             with self._get_connection() as conn:
@@ -266,16 +203,39 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to export data: {e}")
             return []
+    
+    def discover_user(self, user_id: int, username: str, full_name: str, group_id: int, group_name: str) -> None:
+        """
+        Ensures a user exists in the database for a given group.
+        If they don't, a placeholder 'discovered' record is created.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # Use a more specific check to see if this user/group combo is known at all
+                cursor.execute(
+                    "SELECT 1 FROM agreements WHERE user_id = ? AND group_id = ?",
+                    (user_id, group_id)
+                )
+                if cursor.fetchone() is None:
+                    # User is not known in this group, add a 'discovered' record
+                    agreed_at = datetime.utcnow().isoformat()
+                    # Use INSERT OR IGNORE to be safe against race conditions, though less likely in this flow
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO agreements (user_id, username, full_name, group_id, group_name, agreed_at, coc_version)
+                        VALUES (?, ?, ?, ?, ?, ?, 'discovered')
+                        """,
+                        (user_id, username, full_name, group_id, group_name, agreed_at)
+                    )
+                    logger.info(f"Discovered and recorded new user {user_id} in group {group_id}")
+        except Exception as e:
+            logger.error(f"Failed to discover/record user {user_id}: {e}")
+
 
     def get_stats(self, group_id: int) -> Dict:
         """
         Get statistics for a group.
-
-        Args:
-            group_id: Telegram group ID
-
-        Returns:
-            Dictionary with statistics
         """
         try:
             with self._get_connection() as conn:
@@ -303,27 +263,3 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
             return {'total_agreements': 0, 'by_version': {}}
-
-    def discover_user(self, user_id: int, group_id: int):
-        """
-        Adds a user to the database if they don't exist, without an agreement.
-        This is for passively discovering members.
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                # Check if user is in the database for this group at all
-                cursor.execute('''
-                    SELECT 1 FROM agreements WHERE user_id = ? AND group_id = ?
-                ''', (user_id, group_id))
-                if cursor.fetchone() is None:
-                    # Insert a placeholder record for the discovered user.
-                    # This user has NOT agreed. 'agreed_at' and 'coc_version' are placeholder values.
-                    # This record makes them "known" to the bot for commands like /restrict_existing.
-                    cursor.execute('''
-                        INSERT INTO agreements (user_id, group_id, username, full_name, agreed_at, coc_version)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (user_id, group_id, '', '', datetime.utcnow().isoformat(), 'discovered'))
-                    logger.info(f"Discovered and recorded new user {user_id} in group {group_id}")
-        except Exception as e:
-            logger.error(f"Failed to discover user {user_id} in group {group_id}: {e}")

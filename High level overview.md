@@ -1,60 +1,35 @@
 ## 🧭 High-Level Project Overview
 
-### 🧑‍💼 Project Name
-**Telegram Code of Conduct Agreement Bot**
-
 ### 🎯 Goal
-Ensure every group member — existing and new — explicitly agrees to the group's Code of Conduct (CoC) before being allowed to post messages in Telegram groups you administer. The bot is designed for self-hosting on a Raspberry Pi with power-outage resilience.
+To ensure every group member, new or existing, explicitly agrees to the group's Code of Conduct (CoC) before being allowed to post messages.
 
-### 🧩 Summary
-A custom Telegram bot will:
-1. **Onboard new members** by requiring them to agree to the CoC before they can post.
-2. **Recover from power outages** by checking for unagreed members on startup.
-3. **Provide tools for onboarding existing members** through a series of admin commands.
-4. **Record and track agreement data** in a local SQLite database.
-5. **Allow admins** to view reports and manage the agreement process.
+### 🧩 Core Logic
+1.  **Gatekeeper on All Messages**: The bot checks every message. If the sender has not agreed to the current CoC, their message is deleted, they are restricted, and the bot attempts to DM them.
+2.  **Pinned Onboarding Message**: An admin uses `/post_onboarding` to create a persistent message with an "Agree" button. This message is pinned for all users to see.
+3.  **Direct Agreement**: Any user can click the "Agree" button on the pinned message at any time. This records their agreement in the database and grants them speaking permissions.
+
+This architecture is the most robust and user-friendly, as it provides a clear, single point of action for all users while enforcing the rules on anyone who tries to bypass it.
 
 ### 🏗️ Tech Stack
 * **Language:** Python 3.10+
-* **Libraries:** `python-telegram-bot`, `sqlite3`, `python-dotenv`
+* **Libraries:** `python-telegram-bot`
 * **Database:** SQLite
-* **Hosting:** Raspberry Pi (or any Linux server)
 
 ---
 
 ## 📋 Functional Requirements
 
-### 1. Onboarding Flow for New Members
-* Detects when a new user joins the group.
-* Immediately restricts the user from sending messages.
-* Sends them a private message (or inline group message) with a link to the CoC and an "Agree" button.
-* When the user clicks "Agree", the bot records their agreement and lifts the restrictions.
+### 1. New Member Onboarding
+- When a new member joins, they are immediately restricted.
+- The bot attempts to DM them with a welcome message, directing them to the pinned message in the group.
 
-### 2. Onboarding Flow for Existing Members
-*   **Automatic Gatekeeper**: The bot checks every message sent in the group. If a user who has not agreed to the CoC attempts to chat, their message is deleted, they are restricted, and they are sent a DM with instructions. This ensures all active members are onboarded.
-*   **Manual Admin Commands**: For proactive management, admins can use `/restrict_existing` to restrict all known unagreed members at once, and `/sendcode_dm` or `/sendcode_group` to notify them.
+### 2. Existing Member Onboarding
+- The primary mechanism is the **Gatekeeper**. When an existing member who has not agreed tries to talk, their message is deleted, and they are restricted.
+- The pinned message created by `/post_onboarding` serves as the permanent, visible way for these users to agree and get unrestricted.
 
-### 3. Power Recovery & Missed Members
-* On bot startup, it scans its database for all known users in all known groups.
-* It identifies any member who has not agreed to the *current* CoC version (this handles users who joined during downtime or users who need to agree to a new version).
-* It restricts them and sends a "Recovery Notice" with the agreement prompt.
-
-### 4. Data Storage in SQLite
-The database stores user agreements, including:
-* User ID, username, and full name
-* Group ID and name
-* Timestamp of agreement
-* CoC version agreed to
-
-### 5. Admin Commands
+### 3. Admin Commands
 | Command | Description |
 |---|---|
-| `/whoagreed` | List users who have agreed to the current version. |
-| `/restrict_existing` | Proactively restricts all known, unagreed members. |
-| `/sendcode_group` | Sends a public CoC agreement message to the group. |
-| `/sendcode_dm` | Sends a private DM to all known, unagreed members. |
-| `/export` | View agreement statistics and recent agreements. |
-| `/setversion` | Display instructions for updating the CoC version. |
-
-### 6. Configuration
-All configuration is handled via an `.env` file, including the bot token, admin user IDs, CoC link, and CoC version.
+| `/post_onboarding` | Posts the pinnable message for users to agree. |
+| `/whoagreed` | Lists users who have agreed to the current CoC. |
+| `/setversion <v>` | Sets a new CoC version, requiring all users to re-agree. |
