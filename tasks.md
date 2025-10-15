@@ -63,10 +63,13 @@
 
 **Tasks:**
 
-* [ ] Implement `/whoagreed` → Query Google Sheet and return list/count.
-* [ ] Implement `/whohasnotagreed` → List of members missing.
-* [ ] Implement `/sendcode` → Re-sends CoC message to all (or to users without agreement).
+* [ ] Implement `/whoagreed` → Query database and return list/count.
+* [ ] Implement `/scan` → Informs admin about passive member discovery.
+* [ ] Implement `/restrict_existing` → Restricts all discovered, unagreed members.
+* [ ] Implement `/sendcode_group` → Sends a public CoC message to the group.
+* [ ] Implement `/sendcode_dm` → Restricts and sends DMs to all unagreed, discovered members.
 * [ ] Implement `/setversion` → Updates global CoC version and resets state.
+* [ ] Implement passive member discovery on message.
 * [ ] Restrict all admin commands to user IDs in `ADMIN_IDS`.
 
 ---

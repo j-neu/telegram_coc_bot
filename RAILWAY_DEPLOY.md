@@ -170,10 +170,12 @@ Railway Dashboard → Settings → Click "Redeploy"
 
 Use these admin commands in your Telegram group:
 
-- `/whoagreed` - List all users who agreed
-- `/whohasnotagreed` - Check who hasn't agreed
-- `/export` - View recent agreements and statistics
-- `/sendcode` - Send CoC prompt to all members
+- `/whoagreed` - List all users who agreed.
+- `/scan` - Learn how to onboard existing members.
+- `/restrict_existing` - Restrict all unagreed members.
+- `/sendcode_group` - Send a public CoC prompt to the group.
+- `/sendcode_dm` - Privately message all unagreed members.
+- `/export` - View recent agreements and statistics.
 
 ## Database Backup
 
@@ -286,9 +288,11 @@ If you prefer Google Sheets over SQLite:
 - Get User ID: [@userinfobot](https://t.me/userinfobot)
 
 **Key Commands:**
-- `/whoagreed` - View who agreed
-- `/sendcode` - Prompt all members
-- `/export` - Export data
+- `/whoagreed` - View who agreed.
+- `/scan` - Get instructions for onboarding existing members.
+- `/restrict_existing` - Restrict all unagreed members.
+- `/sendcode_dm` - Privately prompt all unagreed members.
+- `/export` - Export data.
 
 **Key Variables:**
 - `BOT_TOKEN` - From BotFather

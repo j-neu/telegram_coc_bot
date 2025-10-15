@@ -104,7 +104,16 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await context.bot.restrict_chat_member(
                     chat_id=chat.id,
                     user_id=user.id,
-                    permissions=ChatPermissions(can_send_messages=False)
+                    permissions=ChatPermissions(
+                        can_send_messages=False,
+                        can_send_media_messages=False,
+                        can_send_polls=False,
+                        can_send_other_messages=False,
+                        can_add_web_page_previews=False,
+                        can_change_info=False,
+                        can_invite_users=False,
+                        can_pin_messages=False,
+                    )
                 )
                 logger.info(f"Restricted user {user.id} in chat {chat.id}")
             except Exception as e:
@@ -196,13 +205,9 @@ async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 user_id=user.id,
                 permissions=ChatPermissions(
                     can_send_messages=True,
-                    can_send_media_messages=True,
-                    can_send_polls=True,
                     can_send_other_messages=True,
                     can_add_web_page_previews=True,
-                    can_change_info=False,
                     can_invite_users=True,
-                    can_pin_messages=False
                 )
             )
             logger.info(f"Unrestricted user {user.id} in chat {group_id}")
@@ -251,53 +256,26 @@ async def who_agreed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(response)
 
 
-async def who_has_not_agreed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command: List users who have NOT agreed."""
+async def scan_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command: Informs the admin about the passive member discovery process."""
     user = update.effective_user
-    chat = update.effective_chat
-
     if not is_admin(user.id):
         await update.message.reply_text(ADMIN_ONLY_MESSAGE)
         return
 
-    await update.message.reply_text("Fetching member list... This may take a moment.")
-
-    # Get all group members
-    try:
-        all_members = []
-        async for member in context.bot.get_chat_administrators(chat.id):
-            if not member.user.is_bot:
-                all_members.append(member.user.id)
-
-        # Note: Getting all members (not just admins) requires different approach
-        # This is a limitation of Telegram Bot API
-        await update.message.reply_text(
-            "⚠️ Note: Due to Telegram API limitations, I can only check administrators. "
-            "Use /sendcode to prompt all members to agree."
-        )
-
-        member_ids = all_members
-        not_agreed = storage_manager.get_all_not_agreed(chat.id, member_ids, COC_VERSION)
-
-        if not not_agreed:
-            await update.message.reply_text("All checked members have agreed to the Code of Conduct!")
-            return
-
-        response = f"📊 Members who have NOT agreed (v{COC_VERSION}):\n\n"
-        response += f"Total: {len(not_agreed)} members\n\n"
-
-        for user_id in not_agreed[:20]:  # Limit to 20
-            response += f"• User ID: {user_id}\n"
-
-        await update.message.reply_text(response)
-
-    except Exception as e:
-        logger.error(f"Failed to get member list: {e}")
-        await update.message.reply_text("Failed to fetch member list. Make sure I'm an admin.")
+    await update.message.reply_text(
+        "ℹ️ Member Discovery Process\n\n"
+        "This bot passively discovers members as they send messages in the group. "
+        "It cannot get a full list of members instantly upon joining.\n\n"
+        "To onboard existing members, do the following:\n"
+        "1. Wait for some time to allow the bot to discover active members.\n"
+        "2. Use `/sendcode_dm` to restrict and send DMs to all discovered, unagreed members.\n"
+        "3. Use `/sendcode_group` to post a public notice for any remaining inactive members."
+    )
 
 
-async def send_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command: Send CoC agreement request to all members."""
+async def send_code_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command: Send CoC agreement request to the group chat."""
     user = update.effective_user
     chat = update.effective_chat
 
@@ -321,6 +299,127 @@ async def send_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         "✅ Code of Conduct agreement request has been sent to the group!"
+    )
+
+
+async def send_code_dm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command: Restrict and send CoC agreement request via DM to all unagreed members."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not is_admin(user.id):
+        await update.message.reply_text(ADMIN_ONLY_MESSAGE)
+        return
+
+    await update.message.reply_text("Processing... This may take a while for large groups.")
+
+    # This is a placeholder for getting all members.
+    # In a real large group, this requires more advanced handling.
+    # For now, we'll rely on the members known to the bot via the database.
+    all_known_users = storage_manager.export_data(group_id=chat.id)
+    member_ids = {u['user_id'] for u in all_known_users}
+
+    if not member_ids:
+        await update.message.reply_text("No members found in the database for this group. Cannot send DMs.")
+        return
+
+    sent_count = 0
+    failed_count = 0
+
+    for user_id in member_ids:
+        # Skip if already agreed to the current version
+        if storage_manager.has_agreed(user_id, chat.id, COC_VERSION):
+            continue
+
+        try:
+            member = await context.bot.get_chat_member(chat.id, user_id)
+            if member.user.is_bot:
+                continue
+
+            # Restrict the user first
+            if DRY_RUN:
+                logger.info(f"[DRY RUN] Would restrict user {user_id} in chat {chat.id}")
+            else:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=user_id,
+                    permissions=ChatPermissions(can_send_messages=False)
+                )
+                logger.info(f"Restricted user {user_id} via /sendcode_dm")
+
+            # Send DM
+            keyboard = [[
+                InlineKeyboardButton("View Code of Conduct 📜", url=config.COC_LINK),
+                InlineKeyboardButton("Agree ✅", callback_data=f"agree_{chat.id}")
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=WELCOME_MESSAGE,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.error(f"Failed to DM or restrict user {user_id}: {e}")
+            failed_count += 1
+
+    await update.message.reply_text(
+        f"DM process complete.\n\n"
+        f"✅ DMs sent successfully: {sent_count}\n"
+        f"❌ Failed to reach: {failed_count}"
+    )
+
+
+async def restrict_existing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command: Restrict all existing, unagreed members."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not is_admin(user.id):
+        await update.message.reply_text(ADMIN_ONLY_MESSAGE)
+        return
+
+    await update.message.reply_text("Processing... Restricting all discovered, unagreed members.")
+
+    all_known_users = storage_manager.export_data(group_id=chat.id)
+    member_ids = {u['user_id'] for u in all_known_users}
+
+    if not member_ids:
+        await update.message.reply_text("No members found in the database for this group to restrict.")
+        return
+
+    restricted_count = 0
+    already_restricted_or_agreed = 0
+
+    for user_id in member_ids:
+        if storage_manager.has_agreed(user_id, chat.id, COC_VERSION):
+            already_restricted_or_agreed += 1
+            continue
+
+        try:
+            member = await context.bot.get_chat_member(chat.id, user_id)
+            if member.user.is_bot or member.status != ChatMemberStatus.MEMBER:
+                continue
+
+            if DRY_RUN:
+                logger.info(f"[DRY RUN] Would restrict user {user_id} in chat {chat.id} via /restrict_existing")
+            else:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=user_id,
+                    permissions=ChatPermissions(can_send_messages=False)
+                )
+                logger.info(f"Restricted user {user_id} via /restrict_existing")
+            restricted_count += 1
+        except Exception as e:
+            logger.error(f"Failed to restrict user {user_id} via /restrict_existing: {e}")
+            
+    await update.message.reply_text(
+        f"Restriction process complete.\n\n"
+        f"✅ Members newly restricted: {restricted_count}\n"
+        f"ℹ️ Members who had already agreed or were not applicable: {already_restricted_or_agreed}"
     )
 
 
@@ -414,7 +513,14 @@ async def check_group_members_on_startup(application: Application) -> None:
                 chat = await application.bot.get_chat(group_id)
 
                 # Get chat administrators to find members
-                async for member in application.bot.get_chat_administrators(group_id):
+                # This is a placeholder for fetching all members.
+                # In a real-world scenario with very large groups, this would need
+                # to be handled carefully, possibly with a database of known members.
+                # For now, we'll rely on the information we have.
+                # We will iterate through the members we know from the database.
+                known_user_ids = {agreement['user_id'] for agreement in all_agreements if agreement['group_id'] == group_id}
+                for user_id in known_user_ids:
+                    member = await application.bot.get_chat_member(group_id, user_id)
                     user = member.user
 
                     # Skip bots and users who already agreed
@@ -435,7 +541,16 @@ async def check_group_members_on_startup(application: Application) -> None:
                             await application.bot.restrict_chat_member(
                                 chat_id=group_id,
                                 user_id=user.id,
-                                permissions=ChatPermissions(can_send_messages=False)
+                                permissions=ChatPermissions(
+                                    can_send_messages=False,
+                                    can_send_media_messages=False,
+                                    can_send_polls=False,
+                                    can_send_other_messages=False,
+                                    can_add_web_page_previews=False,
+                                    can_change_info=False,
+                                    can_invite_users=False,
+                                    can_pin_messages=False,
+                                )
                             )
                             logger.info(f"Restricted user {user.id} in group {group_id}")
                         except Exception as e:
@@ -490,6 +605,16 @@ async def post_init(application: Application) -> None:
     logger.info("Post-startup tasks completed")
 
 
+async def discover_member_on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Passively discover members when they send a message."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if user and chat.type in ['group', 'supergroup']:
+        # This will silently add the user to the database if they don't exist,
+        # which allows /sendcode_dm to find them later.
+        storage_manager.discover_user(user.id, chat.id)
+
 def main() -> None:
     """Start the bot."""
     # Create application
@@ -498,13 +623,20 @@ def main() -> None:
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("whoagreed", who_agreed))
-    application.add_handler(CommandHandler("whohasnotagreed", who_has_not_agreed))
-    application.add_handler(CommandHandler("sendcode", send_code))
+    application.add_handler(CommandHandler("scan", scan_members))
+    application.add_handler(CommandHandler("sendcode_group", send_code_group))
+    application.add_handler(CommandHandler("sendcode_dm", send_code_dm))
+    application.add_handler(CommandHandler("restrict_existing", restrict_existing))
     application.add_handler(CommandHandler("setversion", set_version))
     application.add_handler(CommandHandler("export", export_data))
 
     application.add_handler(CallbackQueryHandler(handle_agreement, pattern="^agree_"))
     application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
+
+    # Add a message handler for passive member discovery
+    from telegram.ext import MessageHandler, filters
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, discover_member_on_message), group=1)
+
 
     # Add post-init callback for startup checks
     application.post_init = post_init

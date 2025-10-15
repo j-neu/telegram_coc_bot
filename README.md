@@ -184,13 +184,15 @@ This ensures **no one slips through** even during downtime!
 All admin commands work in the group:
 
 | Command | Description |
-|---------|-------------|
-| `/start` | Send CoC agreement prompt (anyone can use) |
-| `/whoagreed` | List all users who have agreed to current CoC version |
-| `/whohasnotagreed` | Check which members haven't agreed yet |
-| `/sendcode` | Send CoC agreement request to all group members |
-| `/setversion <version>` | Display instructions for updating CoC version |
-| `/export` | View agreement statistics and recent agreements |
+|---|---|
+| `/start` | Send CoC agreement prompt (anyone can use). |
+| `/whoagreed` | List all users who have agreed to the current CoC version. |
+| `/scan` | Explains how to onboard existing members. |
+| `/restrict_existing` | Restricts all discovered, unagreed members. |
+| `/sendcode_group` | Sends a public CoC agreement message to the group chat. |
+| `/sendcode_dm` | Restricts all unagreed members and sends them a private DM. |
+| `/setversion <version>` | Displays instructions for updating the CoC version. |
+| `/export` | Views agreement statistics and recent agreements. |
 
 ### Agreement Data
 

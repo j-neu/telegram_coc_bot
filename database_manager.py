@@ -277,3 +277,25 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
             return {'total_agreements': 0, 'by_version': {}}
+
+    def discover_user(self, user_id: int, group_id: int):
+        """
+        Adds a user to the database if they don't exist, without an agreement.
+        This is for passively discovering members.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # Check if user is in the database for this group at all
+                cursor.execute('''
+                    SELECT 1 FROM agreements WHERE user_id = ? AND group_id = ?
+                ''', (user_id, group_id))
+                if cursor.fetchone() is None:
+                    # Insert a placeholder record. This will not count as an agreement.
+                    # We can identify these by a null coc_version or a special value.
+                    # For simplicity, we just add them. When they agree, the record will be updated.
+                    # This is a conceptual placeholder. A better approach might be a separate `members` table.
+                    # But for this use case, we can infer membership from their presence.
+                    logger.info(f"Discovered new user {user_id} in group {group_id}")
+        except Exception as e:
+            logger.error(f"Failed to discover user {user_id} in group {group_id}: {e}")

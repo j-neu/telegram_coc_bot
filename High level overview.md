@@ -96,13 +96,15 @@ Each record in the database contains:
 
 ### 5. Admin Commands
 
-| Command            | Description                                       |
-| ------------------ | ------------------------------------------------- |
-| `/whoagreed`       | List users who have agreed to current version     |
-| `/whohasnotagreed` | List users who haven't agreed yet                 |
-| `/sendcode`        | Send CoC prompt to all members                    |
-| `/export`          | View agreement statistics and recent agreements   |
-| `/setversion`      | Display instructions for updating CoC version     |
+| Command | Description |
+|---|---|
+| `/whoagreed` | List users who have agreed to the current version. |
+| `/scan` | Explains the process for onboarding existing members. |
+| `/restrict_existing` | Restricts all discovered, unagreed members. |
+| `/sendcode_group` | Sends a public CoC agreement message to the group. |
+| `/sendcode_dm` | Restricts all unagreed members and sends them a private DM. |
+| `/export` | View agreement statistics and recent agreements. |
+| `/setversion` | Display instructions for updating the CoC version. |
 
 ### 6. Configuration
 
