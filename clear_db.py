@@ -1,36 +1,25 @@
-import sqlite3
+"""Dev utility: clear all rows from the agreements table."""
+import psycopg2
+from dotenv import load_dotenv
 import os
 
-DB_FILE = "coc_agreements.db"
+load_dotenv()
+
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set")
+
 
 def clear_database():
-    """Connects to the SQLite database and deletes all agreements."""
-    if not os.path.exists(DB_FILE):
-        print(f"Database file not found: {DB_FILE}")
-        return
-
+    conn = psycopg2.connect(DATABASE_URL)
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        
-        print(f"Successfully connected to {DB_FILE}")
-
-        # Delete all rows from the agreements table
-        cursor.execute("DELETE FROM agreements;")
-        
-        # Reset the auto-incrementing ID
-        cursor.execute("DELETE FROM sqlite_sequence WHERE name='agreements';")
-
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM agreements;")
         conn.commit()
-        
-        print("All records have been cleared from the 'agreements' table.")
-
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        print("All records cleared from agreements table.")
     finally:
-        if conn:
-            conn.close()
-            print("Database connection closed.")
+        conn.close()
+
 
 if __name__ == "__main__":
     clear_database()

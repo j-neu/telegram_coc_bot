@@ -1,137 +1,132 @@
-## 🧱 **Detailed Developer Task Breakdown**
+# Developer Task Breakdown
 
-### **1. Setup & Configuration**
+## 1. Setup & Configuration
 
-**Tasks:**
-
-* [ ] Create a new bot via [@BotFather](https://t.me/BotFather), get token.
-* [ ] Create a Google Service Account and share the target Google Sheet with it (Editor access).
-* [ ] Store Google credentials securely (JSON file).
-* [ ] Set up environment variables:
-
+- [x] Create bot via [@BotFather](https://t.me/BotFather), get token
+- [x] Create Railway project, add PostgreSQL plugin
+- [x] Configure environment variables (WEBHOOK_URL set after first deploy):
   ```
   BOT_TOKEN=<telegram-bot-token>
-  SHEET_ID=<google-sheet-id>
-  ADMIN_IDS=<comma-separated-admin-ids>
+  ADMIN_IDS=<comma-separated-admin-user-ids>
   COC_VERSION=1.0
-  COC_LINK=https://example.com/code-of-conduct
+  COC_LINK=https://your-code-of-conduct-url
+  DATABASE_URL=<railway-postgres-url>
+  WEBHOOK_URL=<railway-public-url>
+  DRY_RUN=false
   ```
 
 ---
 
-### **2. Integrate Google Sheets**
+## 2. Database (PostgreSQL)
 
-**Tasks:**
-
-* [ ] Connect to Google Sheets via `gspread`.
-* [ ] Create a worksheet named `Agreements` with headers:
-
+- [x] Connect via `psycopg2` using `DATABASE_URL`
+- [x] Create `agreements` table on startup:
   ```
-  user_id | username | full_name | group_id | group_name | agreed_at | coc_version
+  user_id      BIGINT
+  username     TEXT
+  full_name    TEXT
+  group_id     BIGINT
+  group_name   TEXT
+  agreed_at    TIMESTAMPTZ
+  coc_version  TEXT
+  PRIMARY KEY (user_id, group_id, coc_version)
   ```
-* [ ] Implement helper functions:
-
+- [x] Implement helper functions:
   ```python
   def record_agreement(user, group, version): ...
   def has_agreed(user_id, group_id, version): ...
+  def has_agreed_anywhere(user_id, version): ...  # for cross-group fast-path
   def get_all_agreed(group_id, version): ...
-  def get_all_not_agreed(group_id, version): ...
   ```
 
 ---
 
-### **3. Bot Core Features**
+## 3. Gatekeeper (Core Enforcement)
 
-**Tasks:**
+Triggered on every message in a managed group.
 
-* [ ] Implement `/start` command:
+- [ ] Check `has_agreed(user_id, group_id, current_version)`
+- [ ] If not agreed:
+  1. Delete message immediately
+  2. Restrict user (`can_send_messages=False`)
+  3. Attempt DM with CoC and Agree button
+  4. If DM fails (user has privacy settings blocking unknown bots): post inline message in the group tagging the user with the Agree button
+- [ ] If agreed: do nothing, message stands
 
-  * Sends CoC message with **Agree** button.
-* [ ] Implement `CallbackQueryHandler` for “Agree” button.
-
-  * Logs data to Google Sheet.
-  * Unrestricts user in group.
-* [ ] Implement `ChatMemberHandler` for `new_chat_members` event:
-
-  * Restricts user.
-  * Sends onboarding message.
-* [ ] Implement error handling (e.g., if bot cannot DM user, fallback to inline message).
+**Note:** Telegram delivers messages to all clients before the bot can delete them (~0.5–2s window). Mobile push notifications will have already fired with the message content. This is a hard API limitation — delete-fast is the only option.
 
 ---
 
-### **4. Admin Features**
+## 4. New Member Join
 
-**Tasks:**
+Triggered by `ChatMemberHandler` when a user joins.
 
-* [ ] Implement `/whoagreed` → Query database and return list/count.
-* [ ] Implement `/scan` → Informs admin about passive member discovery.
-* [ ] Implement `/restrict_existing` → Restricts all discovered, unagreed members.
-* [ ] Implement `/sendcode_group` → Sends a public CoC message to the group.
-* [ ] Implement `/sendcode_dm` → Restricts and sends DMs to all unagreed, discovered members.
-* [ ] Implement `/setversion` → Updates global CoC version and resets state.
-* [ ] Implement passive member discovery on message.
-* [ ] Restrict all admin commands to user IDs in `ADMIN_IDS`.
+- [ ] Immediately restrict user (`can_send_messages=False`)
+- [ ] Attempt DM with CoC and Agree button
+- [ ] If DM fails: post inline message in group tagging the user
 
 ---
 
-### **5. Permissions Handling**
+## 5. Cross-Group Identity (Hybrid)
 
-**Tasks:**
+Users who are in multiple groups should not have to read the full CoC repeatedly.
 
-* [ ] On join, use `restrict_chat_member` to disable messaging.
-* [ ] On agreement, use `restrict_chat_member` with full permissions to restore.
-* [ ] Optional: After X days, restrict users who haven’t agreed yet.
-
----
-
-### **6. Optional Enhancements**
-
-**Tasks:**
-
-* [ ] Add a `/status` command so users can check if they’ve agreed.
-* [ ] Add multi-language support.
-* [ ] Schedule daily/weekly report to admin (e.g., 3 users haven’t agreed yet).
-* [ ] Use inline keyboards with “View Code of Conduct 📜” and “Agree ✅” buttons.
-* [ ] Add simple analytics tab in Google Sheets.
+- [ ] On gatekeeper/join trigger: call `has_agreed_anywhere(user_id, current_version)`
+- [ ] If they have agreed in another group: send lightweight confirm message — "You've already agreed to the CoC in another group. Tap to confirm it applies here too." (one button, no re-reading required)
+- [ ] On confirm: record agreement for this group and unrestrict
+- [ ] If they have never agreed anywhere: run full CoC flow
 
 ---
 
-### **7. Testing**
+## 6. Agree Callback
 
-**Tasks:**
+Triggered when user taps any Agree or Confirm button.
 
-* [ ] Test joining workflow in a private test group.
-* [ ] Test agreeing via DM and inline button.
-* [ ] Test all admin commands.
-* [ ] Test Google Sheets writes and reads.
-* [ ] Verify permission enforcement (restricted/unrestricted).
+- [ ] Record agreement to PostgreSQL (`record_agreement()`)
+- [ ] Unrestrict user in the relevant group (`can_send_messages=True`, restore all permissions)
+- [ ] Confirm to user ("You're all set, you can now post in [group name]")
 
 ---
 
-### **8. Deployment**
+## 7. Admin Commands
 
-**Tasks:**
+All commands restricted to user IDs in `ADMIN_IDS`.
 
-* [ ] Choose hosting (PythonAnywhere / Render / VPS).
-* [ ] Configure bot to run via `webhook` (for performance) or `polling` (simpler).
-* [ ] Add bot as admin in target groups.
-* [ ] Verify group permissions.
-* [ ] Document environment variables and setup steps in README.
-
----
-
-## 🧾 Deliverables
-
-1. Working Python script for the bot.
-2. `.env` configuration file template.
-3. Google Sheet connection working.
-4. Admin documentation (commands + setup).
-5. Deployment instructions.
+| Command | Description |
+|---|---|
+| `/whoagreed` | List users who have agreed to the current CoC version in this group |
+| `/setversion <v>` | Bump CoC version — all users must re-agree |
+| `/post_onboarding` | Post a pinnable message with an Agree button (permanent anchor for users to self-serve) |
 
 ---
 
-Would you like me to now **draft the Google Sheets structure and API integration code** (so your developer can plug it in directly)?
-It would include:
+## 8. Railway Deployment
 
-* Ready-made `gspread` integration module.
-* `record_agreement()` and `has_agreed()` helper functions.
+- [ ] Use webhooks (not polling) — Railway provides a persistent public HTTPS URL
+- [ ] Set `WEBHOOK_URL` to the Railway-assigned URL
+- [ ] Create `Procfile` or `railway.toml` to define start command
+- [ ] PostgreSQL data persists across deploys via Railway plugin (no ephemeral filesystem risk)
+- [ ] Bot restarts automatically on crash via Railway's always-on service
+
+---
+
+## 9. Known Constraints to Handle
+
+- [ ] **Delete race condition**: Message is visible ~0.5–2s and push notifications fire before delete. Acceptable, not fixable.
+- [ ] **DM blocked**: Implement group fallback (inline message tagging user) as described in §3
+- [ ] **Bot permissions**: Must be admin in each group with "Delete messages" + "Restrict members" enabled
+- [ ] **DRY_RUN mode**: Log all actions without actually restricting users or deleting messages — for safe production testing
+
+---
+
+## 10. Testing
+
+- [ ] Create private test group with test accounts
+- [ ] Verify gatekeeper: message deleted, user restricted, DM sent
+- [ ] Verify DM-blocked fallback: inline group message appears
+- [ ] Verify Agree flow: user unrestricted after tap
+- [ ] Verify new member join: immediate restriction + DM
+- [ ] Verify cross-group fast-path: confirm-only flow for known users
+- [ ] Verify `/setversion` forces re-agreement for all users
+- [ ] Verify admin commands reject non-admin users
+- [ ] Verify PostgreSQL writes persist across Railway redeploy

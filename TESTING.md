@@ -1,85 +1,63 @@
 # Testing Guide
 
-## Safe Testing Strategies
+## Strategy 1: Private Test Group (Start Here)
 
-### Strategy 1: Private Test Group (RECOMMENDED)
+1. Create a new private Telegram group ("CoC Bot Test")
+2. Add 2–3 test accounts (friends or secondary accounts)
+3. Add the bot as admin with "Delete messages" and "Restrict members" permissions
+4. Set `DRY_RUN=false` — test with real enforcement
 
-1. **Create a test group**:
-   - Create a new private Telegram group
-   - Name it "CoC Bot Test" or similar
-   - Add 2-3 alternative accounts (ask friends or use test accounts)
+Test scenarios to run:
+- Have a test account send a message before agreeing → verify message is deleted and user is restricted
+- Verify the bot sends a DM to the test account with an Agree button
+- Tap Agree → verify user is unrestricted and can now post
+- Have another test account block DMs from unknown bots → verify bot falls back to inline group message
+- Have the same account join a second test group → verify the cross-group fast-path (confirm-only, not full CoC)
+- Run `/setversion 2.0` → verify all users must re-agree
 
-2. **Add the bot**:
-   - Add your bot to the test group
-   - Make it an admin with "Restrict members" permission
+## Strategy 2: Dry-Run in Production
 
-3. **Test scenarios**:
-   - Have a test account join the group
-   - Verify they get restricted and receive the CoC message
-   - Click "Agree" and verify they get unrestricted
-   - Test all admin commands
-   - Check Google Sheets to verify data is recorded
+Set `DRY_RUN=true` before adding the bot to a production group:
+- Bot logs what it would do without restricting anyone or deleting messages
+- Agreements are still recorded to the database
+- Use this to verify the bot is detecting messages correctly before going live
 
-4. **Verify in Google Sheets**:
-   - Check that test data appears correctly
-   - You can delete test rows manually before production use
-
-### Strategy 2: Dry-Run Mode (Added Below)
-
-Use the new `DRY_RUN` mode that logs actions without actually restricting users or modifying permissions.
-
-### Strategy 3: Staged Rollout
-
-1. **Phase 1: Monitoring Only**
-   - Add bot to production group but keep `DRY_RUN=true`
-   - Monitor logs to see what would happen
-   - Verify Google Sheets integration works
-
-2. **Phase 2: Admin Testing**
-   - Test admin commands in production group
-   - Use `/sendcode` to send a voluntary agreement request
-   - Check who agrees without restrictions
-
-3. **Phase 3: New Members Only**
-   - Set `DRY_RUN=false`
-   - Only new members will be restricted
-   - Existing members are unaffected unless you run `/sendcode`
-
-4. **Phase 4: Full Deployment**
-   - Once confident, use `/sendcode` to prompt existing members
+Switch to `DRY_RUN=false` when ready to enforce.
 
 ## Testing Checklist
 
-- [ ] Bot can connect to Google Sheets
-- [ ] Bot receives messages in test group
-- [ ] New member gets restricted (or logged in dry-run mode)
-- [ ] New member receives CoC message (DM or group)
-- [ ] Clicking "Agree" records data to Google Sheets
-- [ ] Clicking "Agree" unrestricts user (or logs in dry-run mode)
-- [ ] `/whoagreed` shows correct users
-- [ ] `/sendcode` sends CoC message to group
-- [ ] Admin commands only work for configured admin IDs
-- [ ] Non-admin users cannot use admin commands
+- [ ] Message from non-agreed user is deleted within ~2 seconds
+- [ ] User is restricted after message deletion
+- [ ] DM with Agree button is sent to restricted user
+- [ ] Inline group fallback fires when user has DMs blocked
+- [ ] Tapping Agree unrestricts the user
+- [ ] Agreement is recorded in PostgreSQL
+- [ ] Cross-group fast-path shown for users already agreed elsewhere
+- [ ] Fast-path confirm records agreement for the new group
+- [ ] New member join triggers immediate restriction + DM
+- [ ] `/whoagreed` returns correct list for this group
+- [ ] `/setversion` forces re-agreement for all users
+- [ ] Admin commands reject non-admin users
+- [ ] Database data persists across a Railway redeploy (redeploy and verify existing agreements still present)
 
-## Common Test Issues
+## Common Issues
 
-### Bot doesn't restrict users
-- Check bot has "Restrict members" permission
-- Verify bot is actually an admin
-- Check logs for error messages
+### Bot doesn't delete messages
+- Check bot has "Delete messages" admin permission in the group
+- Verify bot is actually an admin (not just a member)
 
-### Can't send DM to test users
-- Test users must `/start` the bot first to enable DMs
-- Otherwise bot will fallback to group message (expected behavior)
+### Bot can't restrict users
+- Check "Restrict members" admin permission is enabled
+- Group must not be a channel
 
-### Google Sheets errors
-- Verify service account has Editor access to sheet
-- Check `credentials.json` is in correct location
-- Confirm SHEET_ID is correct
+### DM not received
+- Expected if user has blocked DMs from unknown bots — the inline fallback should fire instead
+- If neither fires, check logs for errors
 
-## Cleaning Up Test Data
+### Cross-group fast-path not appearing
+- Verify `has_agreed_anywhere()` is querying across all `group_id` values for that `user_id`
+- Check the `coc_version` matches exactly (string comparison)
 
-After testing, you can:
-1. Delete test rows from Google Sheet manually
-2. Create a new sheet for production
-3. Keep test data - it won't affect production operations
+### Data lost after Railway redeploy
+- This means the bot is writing to the local filesystem, not PostgreSQL
+- Verify `DATABASE_URL` env var is set and the bot is connecting to it, not creating a local SQLite file

@@ -21,14 +21,8 @@ from config import (
     AGREEMENT_SUCCESS_MESSAGE,
     ADMIN_ONLY_MESSAGE,
     DRY_RUN,
-    STORAGE_TYPE,
 )
-
-# Import storage manager based on configuration
-if STORAGE_TYPE == 'sqlite':
-    from database_manager import DatabaseManager as StorageManager
-else:
-    from sheets_manager import SheetsManager as StorageManager
+from database_manager import DatabaseManager as StorageManager
 
 # Setup logging
 logging.basicConfig(
@@ -37,8 +31,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Log configuration
-logger.info(f"Storage type: {STORAGE_TYPE}")
 if DRY_RUN:
     logger.warning("=" * 60)
     logger.warning("DRY RUN MODE ENABLED - No users will be restricted")
@@ -256,109 +248,6 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.error(f"Error in gatekeeper for user {user.id}: {e}")
 
 
-async def check_group_members_on_startup(application: Application) -> None:
-    """
-    Check all groups for members who haven't agreed after startup.
-    This handles the case where the bot was offline and missed new joins.
-    """
-    logger.info("Running startup check for unagreed members...")
-
-    try:
-        # Get list of groups the bot is in from database
-        # We'll check all groups we have agreements for
-        all_agreements = storage_manager.export_data()
-
-        # Get unique group IDs
-        group_ids = set()
-        for agreement in all_agreements:
-            group_id = agreement.get('group_id')
-            if group_id:
-                group_ids.add(group_id)
-
-        logger.info(f"Found {len(group_ids)} groups to check")
-
-        for group_id in group_ids:
-            try:
-                # Get all chat members
-                logger.info(f"Checking group {group_id} for unagreed members")
-                chat = await application.bot.get_chat(group_id)
-
-                # Get chat administrators to find members
-                async for member in application.bot.get_chat_administrators(group_id):
-                    user = member.user
-
-                    # Skip bots and users who already agreed
-                    if user.is_bot:
-                        continue
-
-                    if storage_manager.has_agreed(user.id, group_id, COC_VERSION):
-                        continue
-
-                    # Found someone who hasn't agreed
-                    logger.info(f"Found unagreed member {user.id} in group {group_id}")
-
-                    # Restrict them if not in dry-run mode
-                    if DRY_RUN:
-                        logger.info(f"[DRY RUN] Would restrict user {user.id} in group {group_id}")
-                    else:
-                        try:
-                            await application.bot.restrict_chat_member(
-                                chat_id=group_id,
-                                user_id=user.id,
-                                permissions=ChatPermissions(can_send_messages=False)
-                            )
-                            logger.info(f"Restricted user {user.id} in group {group_id}")
-                        except Exception as e:
-                            logger.error(f"Failed to restrict user {user.id}: {e}")
-                            continue
-
-                    # Send CoC message
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("View Code of Conduct 📜", url=config.COC_LINK),
-                            InlineKeyboardButton("Agree ✅", callback_data=f"agree_{group_id}")
-                        ]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
-                    # Try to send DM
-                    try:
-                        await application.bot.send_message(
-                            chat_id=user.id,
-                            text=f"⚠️ Recovery Notice: The bot was offline when you joined.\n\n{WELCOME_MESSAGE}",
-                            reply_markup=reply_markup,
-                            parse_mode='Markdown'
-                        )
-                        logger.info(f"Sent recovery DM to user {user.id}")
-                    except Exception as e:
-                        # If DM fails, send in group
-                        logger.warning(f"Failed to send DM to user {user.id}: {e}")
-                        try:
-                            await application.bot.send_message(
-                                chat_id=group_id,
-                                text=f"⚠️ Recovery Notice\n\n{user.mention_html()}, please review and agree to our Code of Conduct:\n\n{WELCOME_MESSAGE}",
-                                reply_markup=reply_markup,
-                                parse_mode='HTML'
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to send group message: {e}")
-
-            except Exception as e:
-                logger.error(f"Failed to check group {group_id}: {e}")
-                continue
-
-        logger.info("Startup member check completed")
-
-    except Exception as e:
-        logger.error(f"Failed during startup check: {e}")
-
-
-async def post_init(application: Application) -> None:
-    """Called after bot initialization but before polling starts."""
-    logger.info("Bot initialized, running post-startup tasks...")
-    await check_group_members_on_startup(application)
-    logger.info("Post-startup tasks completed")
-
 
 def main() -> None:
     """Start the bot."""
@@ -373,13 +262,6 @@ def main() -> None:
     application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gatekeeper_handler))
 
-<<<<<<< HEAD
-    # Add post-init callback for startup checks
-    application.post_init = post_init
-
-    # Start bot
-=======
->>>>>>> d4c25183d4ea93600488801ec62cccb59f8f62c4
     logger.info("Bot starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

@@ -1,81 +1,54 @@
-"""SQLite database manager for tracking CoC agreements."""
-import sqlite3
-import os
-from datetime import datetime
-from typing import List, Dict, Optional
+"""PostgreSQL database manager for tracking CoC agreements."""
 import logging
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import List, Dict
 
-from config import COC_VERSION
+import psycopg2
+import psycopg2.extras
+
+from config import COC_VERSION, DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
 
 class DatabaseManager:
-    """Manages SQLite database operations for CoC agreements."""
 
-    def __init__(self, db_path: str = None):
-        """
-        Initialize database connection.
-
-        Args:
-            db_path: Path to SQLite database file
-        """
-        # Use DATABASE_PATH env var if available (for Railway persistent storage)
-        # Otherwise use local file
-        if db_path is None:
-            db_path = os.getenv('DATABASE_PATH', 'coc_agreements.db')
-
-        # Ensure directory exists
-        db_dir = os.path.dirname(db_path)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
-
-        self.db_path = db_path
-        logger.info(f"Using database at: {self.db_path}")
+    def __init__(self):
         self._init_database()
+        logger.info("Database initialized successfully")
 
     @contextmanager
-    def _get_connection(self):
-        """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+    def _conn(self):
+        conn = psycopg2.connect(DATABASE_URL)
         try:
             yield conn
             conn.commit()
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            raise e
+            raise
         finally:
             conn.close()
 
     def _init_database(self):
-        """Create tables if they don't exist."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Create agreements table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS agreements (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    username TEXT,
-                    full_name TEXT,
-                    group_id INTEGER NOT NULL,
-                    group_name TEXT,
-                    agreed_at TEXT NOT NULL,
-                    coc_version TEXT NOT NULL,
-                    UNIQUE(user_id, group_id, coc_version)
-                )
-            ''')
-
-            # Create index for faster lookups
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_user_group
-                ON agreements(user_id, group_id)
-            ''')
-
-            logger.info("Database initialized successfully")
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS agreements (
+                        user_id     BIGINT NOT NULL,
+                        username    TEXT,
+                        full_name   TEXT,
+                        group_id    BIGINT NOT NULL,
+                        group_name  TEXT,
+                        agreed_at   TIMESTAMPTZ NOT NULL,
+                        coc_version TEXT NOT NULL,
+                        PRIMARY KEY (user_id, group_id, coc_version)
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_agreements_user_group
+                    ON agreements (user_id, group_id)
+                """)
 
     def record_agreement(
         self,
@@ -86,180 +59,65 @@ class DatabaseManager:
         group_name: str,
         version: str = COC_VERSION
     ) -> bool:
-        """
-        Record a user's agreement to the CoC.
-        """
         try:
-            agreed_at = datetime.utcnow().isoformat()
-
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT OR REPLACE INTO agreements
-                    (user_id, username, full_name, group_id, group_name, agreed_at, coc_version)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (user_id, username or '', full_name or '', group_id,
-                      group_name or '', agreed_at, version))
-
-            logger.info(f"Recorded agreement for user {user_id} in group {group_id} with version {version}")
+            with self._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO agreements
+                            (user_id, username, full_name, group_id, group_name, agreed_at, coc_version)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (user_id, group_id, coc_version) DO UPDATE SET
+                            username   = EXCLUDED.username,
+                            full_name  = EXCLUDED.full_name,
+                            group_name = EXCLUDED.group_name,
+                            agreed_at  = EXCLUDED.agreed_at
+                    """, (user_id, username or '', full_name or '', group_id,
+                          group_name or '', datetime.now(timezone.utc), version))
+            logger.info(f"Recorded agreement: user={user_id} group={group_id} version={version}")
             return True
         except Exception as e:
-            logger.error(f"Failed to record agreement: {e}")
+            logger.error(f"record_agreement failed: {e}")
             return False
 
-    def has_agreed(
-        self,
-        user_id: int,
-        group_id: int,
-        version: str = COC_VERSION
-    ) -> bool:
-        """
-        Check if a user has agreed to the CoC for a specific group and version.
-        """
+    def has_agreed(self, user_id: int, group_id: int, version: str = COC_VERSION) -> bool:
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT 1 FROM agreements
-                    WHERE user_id = ? AND group_id = ? AND coc_version = ?
-                ''', (user_id, group_id, version))
-
-                return cursor.fetchone() is not None
+            with self._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT 1 FROM agreements
+                        WHERE user_id = %s AND group_id = %s AND coc_version = %s
+                    """, (user_id, group_id, version))
+                    return cur.fetchone() is not None
         except Exception as e:
-            logger.error(f"Failed to check agreement status: {e}")
+            logger.error(f"has_agreed failed: {e}")
             return False
 
-    def get_all_agreed(
-        self,
-        group_id: int,
-        version: str = COC_VERSION
-    ) -> List[Dict]:
-        """
-        Get all users who have agreed to the CoC in a specific group.
-        """
+    def has_agreed_anywhere(self, user_id: int, version: str = COC_VERSION) -> bool:
+        """Return True if user has agreed in any group under the given version."""
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT user_id, username, full_name, group_id,
-                           group_name, agreed_at, coc_version
-                    FROM agreements
-                    WHERE group_id = ? AND coc_version = ?
-                    ORDER BY agreed_at DESC
-                ''', (group_id, version))
-
-                rows = cursor.fetchall()
-                return [dict(row) for row in rows]
+            with self._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT 1 FROM agreements
+                        WHERE user_id = %s AND coc_version = %s
+                        LIMIT 1
+                    """, (user_id, version))
+                    return cur.fetchone() is not None
         except Exception as e:
-            logger.error(f"Failed to get agreed users: {e}")
-            return []
+            logger.error(f"has_agreed_anywhere failed: {e}")
+            return False
 
-    def get_unagreed_members(self, group_id: int, version: str = COC_VERSION) -> List[int]:
-        """
-        Get all user IDs in a group that have NOT agreed to the specified version.
-        This includes users who have agreed to a previous version and newly discovered users.
-        """
+    def get_all_agreed(self, group_id: int, version: str = COC_VERSION) -> List[Dict]:
         try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                # Get IDs of everyone who HAS agreed to the current version
-                cursor.execute('''
-                    SELECT user_id FROM agreements WHERE group_id = ? AND coc_version = ?
-                ''', (group_id, version))
-                agreed_user_ids = {row['user_id'] for row in cursor.fetchall()}
-
-                # Get IDs of ALL users known in that group
-                cursor.execute('''
-                    SELECT DISTINCT user_id FROM agreements WHERE group_id = ?
-                ''', (group_id,))
-                all_known_user_ids = {row['user_id'] for row in cursor.fetchall()}
-
-                # Return the difference
-                return list(all_known_user_ids - agreed_user_ids)
-        except Exception as e:
-            logger.error(f"Failed to get unagreed members: {e}")
-            return []
-
-    def export_data(self, group_id: Optional[int] = None) -> List[Dict]:
-        """
-        Export all data from the database.
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-
-                if group_id:
-                    cursor.execute('''
-                        SELECT * FROM agreements WHERE group_id = ?
+            with self._conn() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT user_id, username, full_name, group_id, group_name, agreed_at, coc_version
+                        FROM agreements
+                        WHERE group_id = %s AND coc_version = %s
                         ORDER BY agreed_at DESC
-                    ''', (group_id,))
-                else:
-                    cursor.execute('''
-                        SELECT * FROM agreements ORDER BY agreed_at DESC
-                    ''')
-
-                rows = cursor.fetchall()
-                return [dict(row) for row in rows]
+                    """, (group_id, version))
+                    return [dict(row) for row in cur.fetchall()]
         except Exception as e:
-            logger.error(f"Failed to export data: {e}")
+            logger.error(f"get_all_agreed failed: {e}")
             return []
-    
-    def discover_user(self, user_id: int, username: str, full_name: str, group_id: int, group_name: str) -> None:
-        """
-        Ensures a user exists in the database for a given group.
-        If they don't, a placeholder 'discovered' record is created.
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                # Use a more specific check to see if this user/group combo is known at all
-                cursor.execute(
-                    "SELECT 1 FROM agreements WHERE user_id = ? AND group_id = ?",
-                    (user_id, group_id)
-                )
-                if cursor.fetchone() is None:
-                    # User is not known in this group, add a 'discovered' record
-                    agreed_at = datetime.utcnow().isoformat()
-                    # Use INSERT OR IGNORE to be safe against race conditions, though less likely in this flow
-                    cursor.execute(
-                        """
-                        INSERT OR IGNORE INTO agreements (user_id, username, full_name, group_id, group_name, agreed_at, coc_version)
-                        VALUES (?, ?, ?, ?, ?, ?, 'discovered')
-                        """,
-                        (user_id, username, full_name, group_id, group_name, agreed_at)
-                    )
-                    logger.info(f"Discovered and recorded new user {user_id} in group {group_id}")
-        except Exception as e:
-            logger.error(f"Failed to discover/record user {user_id}: {e}")
-
-
-    def get_stats(self, group_id: int) -> Dict:
-        """
-        Get statistics for a group.
-        """
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-
-                # Total agreements
-                cursor.execute('''
-                    SELECT COUNT(*) as total FROM agreements WHERE group_id = ?
-                ''', (group_id,))
-                total = cursor.fetchone()['total']
-
-                # Agreements by version
-                cursor.execute('''
-                    SELECT coc_version, COUNT(*) as count
-                    FROM agreements
-                    WHERE group_id = ?
-                    GROUP BY coc_version
-                ''', (group_id,))
-                by_version = {row['coc_version']: row['count'] for row in cursor.fetchall()}
-
-                return {
-                    'total_agreements': total,
-                    'by_version': by_version
-                }
-        except Exception as e:
-            logger.error(f"Failed to get stats: {e}")
-            return {'total_agreements': 0, 'by_version': {}}

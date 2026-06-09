@@ -1,42 +1,33 @@
-import sqlite3
+"""Dev utility: print all rows in the agreements table."""
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+import os
 
-DB_FILE = "coc_agreements.db"
+load_dotenv()
+
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set")
+
 
 def read_database():
-    """Connects to the SQLite database and prints all agreements."""
+    conn = psycopg2.connect(DATABASE_URL)
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        print(f"Successfully connected to {DB_FILE}")
-
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        if not tables:
-            print("No tables found in the database.")
-            return
-
-        for table_name in tables:
-            table_name = table_name[0]
-            print(f"\nContents of table: {table_name}")
-            cursor.execute(f"PRAGMA table_info({table_name})")
-            columns = [info[1] for info in cursor.fetchall()]
-            print(" | ".join(columns))
-            print("-" * (len(" | ".join(columns))))
-            
-            cursor.execute(f"SELECT * FROM {table_name}")
-            rows = cursor.fetchall()
-
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM agreements ORDER BY agreed_at DESC;")
+            rows = cur.fetchall()
             if not rows:
-                print("No data in this table.")
-            else:
-                for row in rows:
-                    print(" | ".join(map(str, row)))
-
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
+                print("No records found.")
+                return
+            headers = list(rows[0].keys())
+            print(" | ".join(headers))
+            print("-" * (len(" | ".join(headers))))
+            for row in rows:
+                print(" | ".join(str(v) for v in row.values()))
     finally:
-        if conn:
-            conn.close()
+        conn.close()
+
 
 if __name__ == "__main__":
     read_database()

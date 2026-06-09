@@ -29,8 +29,12 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 env/
 ENV/
+
+# SQLite (legacy, replaced by PostgreSQL)
+*.db
 
 # IDE
 .vscode/
