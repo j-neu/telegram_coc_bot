@@ -217,35 +217,75 @@ async def set_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles all messages to enforce CoC agreement."""
+    """Delete messages and restrict users who haven't agreed to the CoC."""
     user = update.effective_user
     chat = update.effective_chat
     message = update.effective_message
 
-    if not user or not chat or not message or chat.type not in ['group', 'supergroup'] or is_admin(user.id):
+    if not user or not chat or not message:
+        return
+    if chat.type not in ['group', 'supergroup']:
+        return
+    if user.is_bot or is_admin(user.id):
+        return
+    if storage_manager.has_agreed(user.id, chat.id, COC_VERSION):
         return
 
-    if not storage_manager.has_agreed(user.id, chat.id, COC_VERSION):
-        logger.info(f"Gatekeeper: User {user.id} has not agreed. Deleting message.")
+    logger.info(f"Gatekeeper: blocking user={user.id} in chat={chat.id}")
+
+    if DRY_RUN:
+        logger.info(f"[DRY RUN] Would delete message and restrict user {user.id} in {chat.id}")
+        return
+
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Failed to delete message from user {user.id}: {e}")
+
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat.id,
+            user_id=user.id,
+            permissions=ChatPermissions(can_send_messages=False)
+        )
+    except Exception as e:
+        logger.error(f"Failed to restrict user {user.id}: {e}")
+
+    keyboard = [[
+        InlineKeyboardButton("View Code of Conduct 📜", url=config.COC_LINK),
+        InlineKeyboardButton("Agree ✅", callback_data=f"agree_{chat.id}")
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    dm_sent = False
+    try:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                f"Your message in '{chat.title}' was removed because you haven't agreed to the "
+                f"Code of Conduct yet.\n\nPlease read the CoC and click Agree to restore your access."
+            ),
+            reply_markup=reply_markup
+        )
+        dm_sent = True
+        logger.info(f"Sent CoC DM to user {user.id}")
+    except Exception:
+        pass
+
+    if not dm_sent:
+        logger.warning(f"Could not DM user {user.id}, posting group fallback")
         try:
-            if not DRY_RUN:
-                await message.delete()
-                await context.bot.restrict_chat_member(
-                    chat_id=chat.id,
-                    user_id=user.id,
-                    permissions=ChatPermissions(can_send_messages=False)
-                )
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text=f"Your message in '{chat.title}' was removed because you have not yet agreed to the Code of Conduct. "
-                         "Please find the pinned message in the group to agree and restore your chat permissions."
-                )
-            except Exception:
-                logger.warning(f"Gatekeeper: Failed to send DM to user {user.id}. They are still restricted.")
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=(
+                    f"{user.mention_html()}, your message was removed — you haven't agreed to the "
+                    f"Code of Conduct yet. Please read it and click Agree to restore your access."
+                ),
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
         except Exception as e:
-            logger.error(f"Error in gatekeeper for user {user.id}: {e}")
+            logger.error(f"Failed to send group fallback for user {user.id}: {e}")
 
 
 
@@ -260,7 +300,7 @@ def main() -> None:
     
     application.add_handler(CallbackQueryHandler(handle_agreement, pattern="^agree_"))
     application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gatekeeper_handler))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, gatekeeper_handler))
 
     logger.info("Bot starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
