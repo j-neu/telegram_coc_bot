@@ -49,6 +49,36 @@ class DatabaseManager:
                     CREATE INDEX IF NOT EXISTS idx_agreements_user_group
                     ON agreements (user_id, group_id)
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                """)
+
+    def get_setting(self, key: str, default: str = '') -> str:
+        try:
+            with self._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT value FROM settings WHERE key = %s", (key,))
+                    row = cur.fetchone()
+                    return row[0] if row else default
+        except Exception as e:
+            logger.error(f"get_setting failed: {e}")
+            return default
+
+    def set_setting(self, key: str, value: str) -> bool:
+        try:
+            with self._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO settings (key, value) VALUES (%s, %s)
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                    """, (key, value))
+            return True
+        except Exception as e:
+            logger.error(f"set_setting failed: {e}")
+            return False
 
     def record_agreement(
         self,

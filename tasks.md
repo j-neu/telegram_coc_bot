@@ -9,9 +9,9 @@
   BOT_TOKEN=<telegram-bot-token>
   ADMIN_IDS=<comma-separated-admin-user-ids>
   COC_VERSION=1.0
-  COC_LINK=https://your-code-of-conduct-url
+  COC_LINK=https://icedippers.com/code-of-conduct
+  COC_LINK_DE=https://icedippers.com/de/verhaltenskodex
   DATABASE_URL=<railway-postgres-url>
-  WEBHOOK_URL=<railway-public-url>
   DRY_RUN=false
   ```
 
@@ -31,12 +31,19 @@
   coc_version  TEXT
   PRIMARY KEY (user_id, group_id, coc_version)
   ```
+- [x] Create `settings` table on startup (stores active CoC version and any future bot-wide config):
+  ```
+  key    TEXT PRIMARY KEY
+  value  TEXT
+  ```
 - [x] Implement helper functions:
   ```python
   def record_agreement(user, group, version): ...
   def has_agreed(user_id, group_id, version): ...
   def has_agreed_anywhere(user_id, version): ...  # for cross-group fast-path
   def get_all_agreed(group_id, version): ...
+  def get_setting(key, default): ...
+  def set_setting(key, value): ...
   ```
 
 ---
@@ -45,13 +52,14 @@
 
 Triggered on every message in a managed group.
 
-- [ ] Check `has_agreed(user_id, group_id, current_version)`
-- [ ] If not agreed:
+- [x] Check `has_agreed(user_id, group_id, current_version)`
+- [x] If not agreed:
   1. Delete message immediately
   2. Restrict user (`can_send_messages=False`)
-  3. Attempt DM with CoC and Agree button
-  4. If DM fails (user has privacy settings blocking unknown bots): post inline message in the group tagging the user with the Agree button
-- [ ] If agreed: do nothing, message stands
+  3. Check `has_agreed_anywhere` — send fast-path confirm if true, full CoC DM if false
+  4. If DM fails (user has privacy settings blocking unknown bots): post inline message in the group tagging the user
+- [x] If agreed: do nothing, message stands
+- [x] All user-facing messages are bilingual (English + German)
 
 **Note:** Telegram delivers messages to all clients before the bot can delete them (~0.5–2s window). Mobile push notifications will have already fired with the message content. This is a hard API limitation — delete-fast is the only option.
 
@@ -61,9 +69,10 @@ Triggered on every message in a managed group.
 
 Triggered by `ChatMemberHandler` when a user joins.
 
-- [ ] Immediately restrict user (`can_send_messages=False`)
-- [ ] Attempt DM with CoC and Agree button
-- [ ] If DM fails: post inline message in group tagging the user
+- [x] Immediately restrict user (`can_send_messages=False`)
+- [x] Check `has_agreed_anywhere` — send fast-path confirm if true, full CoC DM if false
+- [x] If DM fails: post inline message in group tagging the user
+- [x] All user-facing messages are bilingual (English + German)
 
 ---
 
@@ -71,10 +80,10 @@ Triggered by `ChatMemberHandler` when a user joins.
 
 Users who are in multiple groups should not have to read the full CoC repeatedly.
 
-- [ ] On gatekeeper/join trigger: call `has_agreed_anywhere(user_id, current_version)`
-- [ ] If they have agreed in another group: send lightweight confirm message — "You've already agreed to the CoC in another group. Tap to confirm it applies here too." (one button, no re-reading required)
-- [ ] On confirm: record agreement for this group and unrestrict
-- [ ] If they have never agreed anywhere: run full CoC flow
+- [x] On gatekeeper/join trigger: call `has_agreed_anywhere(user_id, current_version)`
+- [x] If they have agreed in another group: send lightweight confirm message with a single "Confirm / Bestätigen ✅" button
+- [x] On confirm: record agreement for this group and unrestrict
+- [x] If they have never agreed anywhere: run full CoC flow (two CoC link buttons EN/DE + Agree / Zustimmen button)
 
 ---
 
@@ -82,51 +91,50 @@ Users who are in multiple groups should not have to read the full CoC repeatedly
 
 Triggered when user taps any Agree or Confirm button.
 
-- [ ] Record agreement to PostgreSQL (`record_agreement()`)
-- [ ] Unrestrict user in the relevant group (`can_send_messages=True`, restore all permissions)
-- [ ] Confirm to user ("You're all set, you can now post in [group name]")
+- [x] Record agreement to PostgreSQL (`record_agreement()`)
+- [x] Unrestrict user in the relevant group (`can_send_messages=True`, restore all permissions)
+- [x] Confirm to user with bilingual success message including the group name
 
 ---
 
-## 7. Admin Commands
+## 7. Admin Commands ✅
 
 All commands restricted to user IDs in `ADMIN_IDS`.
 
 | Command | Description |
 |---|---|
 | `/whoagreed` | List users who have agreed to the current CoC version in this group |
-| `/setversion <v>` | Bump CoC version — all users must re-agree |
-| `/post_onboarding` | Post a pinnable message with an Agree button (permanent anchor for users to self-serve) |
+| `/setversion <v>` | Bump CoC version — stored in PostgreSQL, takes effect immediately without restart |
+| `/post_onboarding` | Post a pinnable bilingual message with a permanent Agree button |
 
 ---
 
-## 8. Railway Deployment
+## 8. Railway Deployment ✅
 
-- [ ] Use webhooks (not polling) — Railway provides a persistent public HTTPS URL
-- [ ] Set `WEBHOOK_URL` to the Railway-assigned URL
-- [ ] Create `Procfile` or `railway.toml` to define start command
-- [ ] PostgreSQL data persists across deploys via Railway plugin (no ephemeral filesystem risk)
-- [ ] Bot restarts automatically on crash via Railway's always-on service
+- [x] Create `Procfile` with `web: python bot.py` (web process type so Railway assigns a public port)
+- [x] PostgreSQL data persists across deploys via Railway plugin (no ephemeral filesystem risk)
+- [x] Bot restarts automatically on crash via Railway's always-on service
+- [x] Webhooks when `WEBHOOK_URL` is set (uses bot token as URL path for basic auth); falls back to polling for local dev
 
 ---
 
-## 9. Known Constraints to Handle
+## 9. Known Constraints (all handled)
 
-- [ ] **Delete race condition**: Message is visible ~0.5–2s and push notifications fire before delete. Acceptable, not fixable.
-- [ ] **DM blocked**: Implement group fallback (inline message tagging user) as described in §3
-- [ ] **Bot permissions**: Must be admin in each group with "Delete messages" + "Restrict members" enabled
-- [ ] **DRY_RUN mode**: Log all actions without actually restricting users or deleting messages — for safe production testing
+- [x] **Delete race condition**: Message is visible ~0.5–2s and push notifications fire before delete. Acceptable, not fixable.
+- [x] **DM blocked**: Group fallback implemented — inline message tagging user posted in the group
+- [x] **Bot permissions**: Documented — must be admin with "Delete messages" + "Restrict members"
+- [x] **DRY_RUN mode**: Implemented — logs all actions without restricting or deleting
 
 ---
 
 ## 10. Testing
 
 - [ ] Create private test group with test accounts
-- [ ] Verify gatekeeper: message deleted, user restricted, DM sent
-- [ ] Verify DM-blocked fallback: inline group message appears
-- [ ] Verify Agree flow: user unrestricted after tap
-- [ ] Verify new member join: immediate restriction + DM
+- [ ] Verify gatekeeper: message deleted, user restricted, bilingual DM sent
+- [ ] Verify DM-blocked fallback: bilingual inline group message appears
+- [ ] Verify Agree flow: user unrestricted, bilingual success confirmation shown
+- [ ] Verify new member join: immediate restriction + bilingual DM
 - [ ] Verify cross-group fast-path: confirm-only flow for known users
-- [ ] Verify `/setversion` forces re-agreement for all users
+- [ ] Verify `/setversion` updates immediately (no restart) and forces re-agreement
 - [ ] Verify admin commands reject non-admin users
 - [ ] Verify PostgreSQL writes persist across Railway redeploy

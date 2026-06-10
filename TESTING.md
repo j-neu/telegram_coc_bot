@@ -9,11 +9,11 @@
 
 Test scenarios to run:
 - Have a test account send a message before agreeing → verify message is deleted and user is restricted
-- Verify the bot sends a DM to the test account with an Agree button
-- Tap Agree → verify user is unrestricted and can now post
-- Have another test account block DMs from unknown bots → verify bot falls back to inline group message
-- Have the same account join a second test group → verify the cross-group fast-path (confirm-only, not full CoC)
-- Run `/setversion 2.0` → verify all users must re-agree
+- Verify the bot sends a bilingual DM to the test account with "CoC (EN)" and "CoC (DE)" buttons and an "Agree / Zustimmen" button
+- Tap Agree → verify user is unrestricted and receives a bilingual confirmation
+- Have another test account block DMs from unknown bots → verify bot falls back to inline group message (also bilingual)
+- Have the same account join a second test group → verify the cross-group fast-path (single "Confirm / Bestätigen" button, no full CoC)
+- Run `/setversion 2.0` → verify the version updates immediately (no restart needed) and all users must re-agree
 
 ## Strategy 2: Dry-Run in Production
 
@@ -28,15 +28,16 @@ Switch to `DRY_RUN=false` when ready to enforce.
 
 - [ ] Message from non-agreed user is deleted within ~2 seconds
 - [ ] User is restricted after message deletion
-- [ ] DM with Agree button is sent to restricted user
-- [ ] Inline group fallback fires when user has DMs blocked
-- [ ] Tapping Agree unrestricts the user
+- [ ] Bilingual DM sent with CoC (EN) + CoC (DE) link buttons and Agree / Zustimmen button
+- [ ] Inline group fallback fires (bilingual) when user has DMs blocked
+- [ ] Tapping Agree / Zustimmen unrestricts the user
+- [ ] Bilingual success confirmation shown after agreement
 - [ ] Agreement is recorded in PostgreSQL
-- [ ] Cross-group fast-path shown for users already agreed elsewhere
+- [ ] Cross-group fast-path shown for users already agreed elsewhere (single Confirm / Bestätigen button)
 - [ ] Fast-path confirm records agreement for the new group
-- [ ] New member join triggers immediate restriction + DM
+- [ ] New member join triggers immediate restriction + bilingual DM
 - [ ] `/whoagreed` returns correct list for this group
-- [ ] `/setversion` forces re-agreement for all users
+- [ ] `/setversion` updates version immediately without restart, forces re-agreement for all users
 - [ ] Admin commands reject non-admin users
 - [ ] Database data persists across a Railway redeploy (redeploy and verify existing agreements still present)
 
@@ -57,6 +58,10 @@ Switch to `DRY_RUN=false` when ready to enforce.
 ### Cross-group fast-path not appearing
 - Verify `has_agreed_anywhere()` is querying across all `group_id` values for that `user_id`
 - Check the `coc_version` matches exactly (string comparison)
+
+### `/setversion` not persisting after restart
+- Verify `DATABASE_URL` is set and the bot is connecting to PostgreSQL
+- The active version is stored in the `settings` table — check it with `SELECT * FROM settings;`
 
 ### Data lost after Railway redeploy
 - This means the bot is writing to the local filesystem, not PostgreSQL

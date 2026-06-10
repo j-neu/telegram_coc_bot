@@ -16,15 +16,13 @@ import config
 from config import (
     BOT_TOKEN,
     ADMIN_IDS,
-    COC_VERSION,
-    WELCOME_MESSAGE,
-    AGREEMENT_SUCCESS_MESSAGE,
-    ADMIN_ONLY_MESSAGE,
+    COC_VERSION as _DEFAULT_COC_VERSION,
     DRY_RUN,
+    WEBHOOK_URL,
+    PORT,
 )
 from database_manager import DatabaseManager as StorageManager
 
-# Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -37,25 +35,43 @@ if DRY_RUN:
     logger.warning("All permission changes will only be logged")
     logger.warning("=" * 60)
 
-# Initialize storage manager
 storage_manager = StorageManager()
+
+# Active CoC version: DB value takes precedence over env var so /setversion persists across restarts.
+_active_coc_version: str = storage_manager.get_setting('coc_version', _DEFAULT_COC_VERSION)
+logger.info(f"Active CoC version: {_active_coc_version}")
 
 
 def is_admin(user_id: int) -> bool:
-    """Check if user is an admin."""
     return user_id in ADMIN_IDS
 
 
+def _coc_agree_keyboard(group_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("CoC (EN) 📜", url=config.COC_LINK),
+            InlineKeyboardButton("CoC (DE) 📜", url=config.COC_LINK_DE),
+        ],
+        [InlineKeyboardButton("Agree / Zustimmen ✅", callback_data=f"agree_{group_id}")]
+    ])
+
+
+def _coc_confirm_keyboard(group_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Confirm / Bestätigen ✅", callback_data=f"confirm_{group_id}")
+    ]])
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Greets the user and explains the bot's purpose in a private chat."""
     await update.message.reply_text(
         "Hello! I am the Code of Conduct bot for your group. "
-        "You can agree to the CoC by clicking the 'Agree' button on the pinned message in your group."
+        "You can agree to the CoC by clicking the 'Agree' button on the pinned message in your group.\n\n"
+        "🇩🇪 Hallo! Ich bin der Verhaltenskodex-Bot für diese Gruppe. "
+        "Du kannst dem Verhaltenskodex zustimmen, indem du in der Gruppe auf den 'Zustimmen'-Button klickst."
     )
 
 
 async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle new members joining the group."""
     if not update.chat_member:
         return
 
@@ -71,51 +87,96 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if user.is_bot:
             return
 
-        if storage_manager.has_agreed(user.id, chat.id, COC_VERSION):
+        if storage_manager.has_agreed(user.id, chat.id, _active_coc_version):
             logger.info(f"Re-joining member {user.id} has already agreed.")
             return
 
-        if not DRY_RUN:
-            try:
-                await context.bot.restrict_chat_member(
-                    chat_id=chat.id,
-                    user_id=user.id,
-                    permissions=ChatPermissions(can_send_messages=False)
-                )
-                logger.info(f"Restricted new member {user.id} in chat {chat.id}")
-            except Exception as e:
-                logger.error(f"Failed to restrict new member {user.id}: {e}")
-        
-        # Attempt to DM the user with instructions
+        if DRY_RUN:
+            logger.info(f"[DRY RUN] Would restrict new member {user.id} in chat {chat.id}")
+            return
+
         try:
-            keyboard = [[InlineKeyboardButton("View Code of Conduct 📜", url=config.COC_LINK)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_message(
-                chat_id=user.id,
-                text="Welcome! Please find the pinned message in the group to agree to the Code of Conduct and start chatting.",
-                reply_markup=reply_markup
+            await context.bot.restrict_chat_member(
+                chat_id=chat.id,
+                user_id=user.id,
+                permissions=ChatPermissions(can_send_messages=False)
             )
+            logger.info(f"Restricted new member {user.id} in chat {chat.id}")
+        except Exception as e:
+            logger.error(f"Failed to restrict new member {user.id}: {e}")
+
+        if storage_manager.has_agreed_anywhere(user.id, _active_coc_version):
+            reply_markup = _coc_confirm_keyboard(chat.id)
+            dm_text = (
+                f"Welcome to '{chat.title}'! 👋\n\n"
+                f"You've already agreed to the CoC in another group. "
+                f"Tap below to confirm it applies here too.\n\n"
+                f"🇩🇪 Willkommen bei '{chat.title}'! 👋\n\n"
+                f"Du hast dem Verhaltenskodex bereits in einer anderen Gruppe zugestimmt. "
+                f"Tippe unten, um zu bestätigen, dass er auch hier gilt."
+            )
+            group_text = (
+                f"Welcome {user.mention_html()}! 👋 "
+                f"Tap below to confirm your CoC agreement for this group (you've agreed before).\n"
+                f"🇩🇪 Tippe unten, um deine Zustimmung zum Verhaltenskodex für diese Gruppe zu bestätigen."
+            )
+        else:
+            reply_markup = _coc_agree_keyboard(chat.id)
+            dm_text = (
+                f"Welcome to '{chat.title}'! 👋\n\n"
+                f"Before you can post, please read the Code of Conduct and click Agree.\n\n"
+                f"🇩🇪 Willkommen bei '{chat.title}'! 👋\n\n"
+                f"Bevor du schreiben kannst, lies bitte den Verhaltenskodex und klicke auf Zustimmen."
+            )
+            group_text = (
+                f"Welcome {user.mention_html()}! 👋 "
+                f"Please read the Code of Conduct and click Agree before posting.\n"
+                f"🇩🇪 Bitte lies den Verhaltenskodex und klicke auf Zustimmen, bevor du schreibst."
+            )
+
+        dm_sent = False
+        try:
+            await context.bot.send_message(chat_id=user.id, text=dm_text, reply_markup=reply_markup)
+            dm_sent = True
+            logger.info(f"Sent CoC DM to new member {user.id}")
         except Exception:
-            logger.warning(f"Could not DM new user {user.id}. They will need to see the pinned message.")
+            pass
+
+        if not dm_sent:
+            logger.warning(f"Could not DM new member {user.id}, posting group fallback")
+            try:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=group_text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"Failed to send group fallback for new member {user.id}: {e}")
 
 
 async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle when a user clicks the 'Agree' button from any message."""
     query = update.callback_query
     user = query.from_user
 
     callback_data = query.data
-    if not callback_data.startswith('agree_'):
+    if not (callback_data.startswith('agree_') or callback_data.startswith('confirm_')):
         return
 
     try:
         group_id = int(callback_data.split('_')[1])
     except (IndexError, ValueError):
-        await query.answer("Invalid agreement data.", show_alert=True, cache_time=60)
+        await query.answer(
+            "Invalid agreement data. / Ungültige Zustimmungsdaten.",
+            show_alert=True, cache_time=60
+        )
         return
 
-    if storage_manager.has_agreed(user.id, group_id, COC_VERSION):
-        await query.answer("You have already agreed to the Code of Conduct!", show_alert=True, cache_time=60)
+    if storage_manager.has_agreed(user.id, group_id, _active_coc_version):
+        await query.answer(
+            "You have already agreed! / Du hast bereits zugestimmt!",
+            show_alert=True, cache_time=60
+        )
         return
 
     try:
@@ -131,11 +192,15 @@ async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         full_name=user.full_name or '',
         group_id=group_id,
         group_name=group_name,
-        version=COC_VERSION
+        version=_active_coc_version
     )
 
     if not success:
-        await query.answer("Error: Could not record your agreement. Please try again.", show_alert=True)
+        await query.answer(
+            "Error: Could not save your agreement. Please try again. / "
+            "Fehler: Zustimmung konnte nicht gespeichert werden. Bitte erneut versuchen.",
+            show_alert=True
+        )
         return
 
     if not DRY_RUN:
@@ -154,12 +219,19 @@ async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             logger.info(f"Unrestricted user {user.id} in chat {group_id}")
         except Exception as e:
             logger.error(f"Failed to unrestrict user {user.id}: {e}")
-            await query.answer("Agreement recorded, but failed to update permissions. Please contact an admin.", show_alert=True)
+            await query.answer(
+                "Agreement recorded, but failed to update permissions. Please contact an admin. / "
+                "Zustimmung gespeichert, aber Berechtigungen konnten nicht aktualisiert werden. "
+                "Bitte Admin kontaktieren.",
+                show_alert=True
+            )
             return
-    
-    await query.answer(AGREEMENT_SUCCESS_MESSAGE, show_alert=True)
-    # Don't edit the original message, as it might be pinned and we don't want to change it.
-    # The query.answer is sufficient notification for the user.
+
+    await query.answer(
+        f"You're all set! You can now post in '{group_name}'. 🎉\n"
+        f"🇩🇪 Alles klar! Du kannst jetzt in '{group_name}' schreiben. 🎉",
+        show_alert=True
+    )
 
 
 async def who_agreed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,12 +240,12 @@ async def who_agreed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat = update.effective_chat
     if not is_admin(user.id): return
 
-    agreed_users = storage_manager.get_all_agreed(chat.id, COC_VERSION)
+    agreed_users = storage_manager.get_all_agreed(chat.id, _active_coc_version)
     if not agreed_users:
         await update.message.reply_text("No users have agreed to the Code of Conduct yet.")
         return
 
-    response = f"📊 Users who agreed to CoC v{COC_VERSION}: {len(agreed_users)} total\n\n"
+    response = f"📊 Users who agreed to CoC v{_active_coc_version}: {len(agreed_users)} total\n\n"
     response += "\n".join([
         f"• @{u.get('username', '') or u.get('full_name', 'Unknown')}"
         for u in agreed_users[:50]
@@ -189,30 +261,45 @@ async def post_onboarding_message(update: Update, context: ContextTypes.DEFAULT_
     chat = update.effective_chat
     if not is_admin(user.id): return
 
-    keyboard = [[
-        InlineKeyboardButton("View & Agree to the Code of Conduct", callback_data=f"agree_{chat.id}")
-    ]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
-        "**Action Required: Agree to the Code of Conduct**\n\n"
+        "*Action Required: Agree to the Code of Conduct*\n\n"
         "To participate in this group, all members must agree to our Code of Conduct. "
-        "Please click the button below to view the CoC and agree to its terms.",
-        reply_markup=reply_markup,
+        "Please read it and click the button below to agree.\n\n"
+        "🇩🇪 *Aktion erforderlich: Verhaltenskodex zustimmen*\n\n"
+        "Um in dieser Gruppe mitzumachen, müssen alle Mitglieder dem Verhaltenskodex zustimmen. "
+        "Bitte lies ihn und klicke unten auf Zustimmen.",
+        reply_markup=_coc_agree_keyboard(chat.id),
         parse_mode='Markdown'
     )
 
+
 async def set_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command: Update CoC version."""
+    global _active_coc_version
     user = update.effective_user
     if not is_admin(user.id): return
 
     if not context.args:
-        await update.message.reply_text(f"Current CoC version: {COC_VERSION}\nUsage: /setversion <new_version>")
+        await update.message.reply_text(
+            f"Current CoC version: {_active_coc_version}\nUsage: /setversion <new_version>"
+        )
         return
 
+    new_version = context.args[0]
+    if new_version == _active_coc_version:
+        await update.message.reply_text(f"CoC version is already {_active_coc_version}. No change made.")
+        return
+
+    old_version = _active_coc_version
+    if not storage_manager.set_setting('coc_version', new_version):
+        await update.message.reply_text("❌ Failed to save new version to database. No change made.")
+        return
+
+    _active_coc_version = new_version
+    logger.info(f"CoC version changed {old_version} → {new_version} by admin {user.id}")
     await update.message.reply_text(
-        "To change the CoC version, please update the `COC_VERSION` in your .env file and restart the bot."
+        f"✅ CoC version updated: {old_version} → {new_version}\n"
+        f"All users must now re-agree to the Code of Conduct."
     )
 
 
@@ -228,7 +315,7 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if user.is_bot or is_admin(user.id):
         return
-    if storage_manager.has_agreed(user.id, chat.id, COC_VERSION):
+    if storage_manager.has_agreed(user.id, chat.id, _active_coc_version):
         return
 
     logger.info(f"Gatekeeper: blocking user={user.id} in chat={chat.id}")
@@ -251,22 +338,38 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error(f"Failed to restrict user {user.id}: {e}")
 
-    keyboard = [[
-        InlineKeyboardButton("View Code of Conduct 📜", url=config.COC_LINK),
-        InlineKeyboardButton("Agree ✅", callback_data=f"agree_{chat.id}")
-    ]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    if storage_manager.has_agreed_anywhere(user.id, _active_coc_version):
+        reply_markup = _coc_confirm_keyboard(chat.id)
+        dm_text = (
+            f"You've already agreed to the CoC in another group. "
+            f"Tap below to confirm it applies in '{chat.title}' too.\n\n"
+            f"🇩🇪 Du hast dem Verhaltenskodex bereits in einer anderen Gruppe zugestimmt. "
+            f"Tippe unten, um zu bestätigen, dass er auch für '{chat.title}' gilt."
+        )
+        group_text = (
+            f"{user.mention_html()}, tap below to confirm your CoC agreement for this group "
+            f"(you've already agreed in another group).\n"
+            f"🇩🇪 Tippe unten, um deine Zustimmung zum Verhaltenskodex für diese Gruppe zu bestätigen."
+        )
+    else:
+        reply_markup = _coc_agree_keyboard(chat.id)
+        dm_text = (
+            f"Your message in '{chat.title}' was removed because you haven't agreed to the "
+            f"Code of Conduct yet.\n\nPlease read the CoC and click Agree to restore your access.\n\n"
+            f"🇩🇪 Deine Nachricht in '{chat.title}' wurde entfernt, weil du dem Verhaltenskodex "
+            f"noch nicht zugestimmt hast.\n\nBitte lies ihn und klicke auf Zustimmen, "
+            f"um wieder schreiben zu können."
+        )
+        group_text = (
+            f"{user.mention_html()}, your message was removed — you haven't agreed to the "
+            f"Code of Conduct yet. Please read it and click Agree to restore your access.\n"
+            f"🇩🇪 Deine Nachricht wurde entfernt — du hast dem Verhaltenskodex noch nicht zugestimmt. "
+            f"Bitte lies ihn und klicke auf Zustimmen."
+        )
 
     dm_sent = False
     try:
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=(
-                f"Your message in '{chat.title}' was removed because you haven't agreed to the "
-                f"Code of Conduct yet.\n\nPlease read the CoC and click Agree to restore your access."
-            ),
-            reply_markup=reply_markup
-        )
+        await context.bot.send_message(chat_id=user.id, text=dm_text, reply_markup=reply_markup)
         dm_sent = True
         logger.info(f"Sent CoC DM to user {user.id}")
     except Exception:
@@ -277,16 +380,12 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             await context.bot.send_message(
                 chat_id=chat.id,
-                text=(
-                    f"{user.mention_html()}, your message was removed — you haven't agreed to the "
-                    f"Code of Conduct yet. Please read it and click Agree to restore your access."
-                ),
+                text=group_text,
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
         except Exception as e:
             logger.error(f"Failed to send group fallback for user {user.id}: {e}")
-
 
 
 def main() -> None:
@@ -297,13 +396,24 @@ def main() -> None:
     application.add_handler(CommandHandler("whoagreed", who_agreed))
     application.add_handler(CommandHandler("post_onboarding", post_onboarding_message))
     application.add_handler(CommandHandler("setversion", set_version))
-    
-    application.add_handler(CallbackQueryHandler(handle_agreement, pattern="^agree_"))
+
+    application.add_handler(CallbackQueryHandler(handle_agreement, pattern="^(agree|confirm)_"))
     application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, gatekeeper_handler))
 
-    logger.info("Bot starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    if WEBHOOK_URL:
+        url_path = BOT_TOKEN  # token as URL path provides basic request authentication
+        logger.info(f"Starting webhook on port {PORT}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=url_path,
+            webhook_url=f"{WEBHOOK_URL}/{url_path}",
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        logger.info("No WEBHOOK_URL set, using polling")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == '__main__':

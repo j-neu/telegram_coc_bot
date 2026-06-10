@@ -1,12 +1,12 @@
 # Telegram Code of Conduct Agreement Bot
 
-A Telegram bot that ensures every group member explicitly agrees to the group's Code of Conduct before being allowed to post. Deployed on Railway for an always-on setup.
+A Telegram bot that ensures every group member explicitly agrees to the group's Code of Conduct before being allowed to post. Deployed on Railway for an always-on setup. All user-facing messages are bilingual (English and German).
 
 ## How It Works
 
 1. **Gatekeeper**: Every message is checked. If the sender hasn't agreed to the current CoC, their message is deleted, they're restricted, and the bot contacts them.
 2. **New members**: Anyone who joins a managed group is immediately restricted until they agree.
-3. **Agreement**: Users receive a DM with an Agree button. If their DMs are blocked, the bot posts inline in the group instead. One tap records their agreement and restores posting permissions.
+3. **Agreement**: Users receive a bilingual DM with links to the CoC in both languages and an Agree button. If their DMs are blocked, the bot posts inline in the group instead. One tap records their agreement and restores posting permissions.
 4. **Cross-group**: Users who've already agreed in another group see a one-tap confirm instead of the full CoC flow.
 
 ## Prerequisites
@@ -31,15 +31,18 @@ In the Railway dashboard under Variables:
 BOT_TOKEN=your_bot_token_from_botfather
 ADMIN_IDS=your_telegram_user_id
 COC_VERSION=1.0
-COC_LINK=https://your-code-of-conduct-url
+COC_LINK=https://your-code-of-conduct-url-english
+COC_LINK_DE=https://your-code-of-conduct-url-german
 DATABASE_URL=${{Postgres.DATABASE_URL}}  # auto-filled by Railway plugin
 WEBHOOK_URL=https://your-app.railway.app
 DRY_RUN=false
 ```
 
+**Note on `COC_VERSION`**: This env var sets the initial version on first deploy. After that, use `/setversion` in the group — the active version is stored in PostgreSQL and persists across restarts.
+
 ### 3. Deploy
 
-Railway auto-deploys on push to your connected branch. The bot starts, connects to PostgreSQL, registers the webhook, and is live.
+Railway auto-deploys on push to your connected branch. The bot starts, connects to PostgreSQL, and begins polling for updates.
 
 ### 4. Add Bot to Your Groups
 
@@ -59,7 +62,7 @@ In each group, type `/post_onboarding` as an admin. Pin the message the bot crea
 | Command | Description |
 |---|---|
 | `/whoagreed` | List users who have agreed to the current CoC version in this group |
-| `/setversion <v>` | Bump CoC version — all users must re-agree |
+| `/setversion <v>` | Bump CoC version — all users must re-agree (persists across restarts) |
 | `/post_onboarding` | Post a pinnable message with a permanent Agree button |
 
 ## Local Development
@@ -77,7 +80,8 @@ Create `.env`:
 BOT_TOKEN=your_bot_token
 ADMIN_IDS=your_user_id
 COC_VERSION=1.0
-COC_LINK=https://your-coc-url
+COC_LINK=https://icedippers.com/code-of-conduct
+COC_LINK_DE=https://icedippers.com/de/verhaltenskodex
 DATABASE_URL=postgresql://localhost/coc_bot
 DRY_RUN=true
 ```
@@ -87,7 +91,7 @@ Run:
 python3 bot.py
 ```
 
-For local development, the bot falls back to polling when no `WEBHOOK_URL` is set.
+Omit `WEBHOOK_URL` in `.env` for local development — the bot falls back to polling automatically.
 
 ## Known Limitations
 
