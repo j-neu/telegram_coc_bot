@@ -101,7 +101,8 @@ async def _delete_fallback(context: ContextTypes.DEFAULT_TYPE, chat_id: int, use
 
 
 async def _send_coc_prompt(context: ContextTypes.DEFAULT_TYPE, user: User, chat: Chat,
-                           dm_text: str, group_text: str, reply_markup: InlineKeyboardMarkup) -> None:
+                           dm_text: str, group_text: str, reply_markup: InlineKeyboardMarkup,
+                           thread_id: int = None) -> None:
     """DM the user; if that fails, post a temporary group message tagging them."""
     try:
         await context.bot.send_message(chat_id=user.id, text=dm_text, reply_markup=reply_markup)
@@ -114,6 +115,7 @@ async def _send_coc_prompt(context: ContextTypes.DEFAULT_TYPE, user: User, chat:
     try:
         sent = await context.bot.send_message(
             chat_id=chat.id,
+            message_thread_id=thread_id,  # forum groups: post in the topic the user wrote in
             text=group_text,
             reply_markup=reply_markup,
             parse_mode='HTML'
@@ -220,6 +222,12 @@ async def _unrestrict(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_id
     if DRY_RUN:
         logger.info(f"[DRY RUN] Would unrestrict user {user_id} in chat {group_id}")
         return True
+    try:
+        member = await context.bot.get_chat_member(group_id, user_id)
+        if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            return True  # admins are never restricted, and Telegram rejects restricting them
+    except Exception as e:
+        logger.error(f"Failed to get member status for {user_id} in {group_id}: {e}")
     try:
         # Granting every permission lifts the restriction entirely; the group's defaults then apply.
         await context.bot.restrict_chat_member(
@@ -483,7 +491,8 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Bitte lies ihn und klicke auf Zustimmen."
         )
 
-    await _send_coc_prompt(context, user, chat, dm_text, group_text, reply_markup)
+    thread_id = message.message_thread_id if message.is_topic_message else None
+    await _send_coc_prompt(context, user, chat, dm_text, group_text, reply_markup, thread_id)
     raise ApplicationHandlerStop
 
 
