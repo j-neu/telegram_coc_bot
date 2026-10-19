@@ -1,8 +1,10 @@
 """Main bot module for Telegram CoC Agreement Bot."""
+import asyncio
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, Chat, User
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CommandHandler,
     CallbackQueryHandler,
     ChatMemberHandler,
@@ -43,9 +45,20 @@ storage_manager = StorageManager()
 _active_coc_version: str = storage_manager.get_setting('coc_version', _DEFAULT_COC_VERSION)
 logger.info(f"Active CoC version: {_active_coc_version}")
 
+# Telegram's service account that relays posts from a linked channel into its discussion group.
+TELEGRAM_SERVICE_USER_ID = 777000
+# Group fallback prompts are deleted when the user agrees, or after this many seconds.
+FALLBACK_DELETE_AFTER = 300
+# Callback query alerts are capped at 200 characters by Telegram.
+ALERT_GROUP_NAME_MAX = 40
+
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+def _short_name(name: str) -> str:
+    return name if len(name) <= ALERT_GROUP_NAME_MAX else name[:ALERT_GROUP_NAME_MAX - 1] + "…"
 
 
 def _coc_agree_keyboard(group_id: int) -> InlineKeyboardMarkup:
@@ -64,6 +77,57 @@ def _coc_confirm_keyboard(group_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+async def _delete_message_later(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int,
+                                message_id: int) -> None:
+    await asyncio.sleep(FALLBACK_DELETE_AFTER)
+    await _delete_fallback(context, chat_id, user_id, message_id)
+
+
+async def _delete_fallback(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int,
+                           message_id: int = None) -> None:
+    """Delete a user's group fallback prompt (the tracked one, or a specific message id)."""
+    fallbacks = context.bot_data.setdefault('fallbacks', {})
+    tracked = fallbacks.get((chat_id, user_id))
+    if message_id is None:
+        message_id = tracked
+    if message_id is None:
+        return
+    if tracked == message_id:
+        fallbacks.pop((chat_id, user_id), None)
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass  # already deleted, or too old to delete
+
+
+async def _send_coc_prompt(context: ContextTypes.DEFAULT_TYPE, user: User, chat: Chat,
+                           dm_text: str, group_text: str, reply_markup: InlineKeyboardMarkup) -> None:
+    """DM the user; if that fails, post a temporary group message tagging them."""
+    try:
+        await context.bot.send_message(chat_id=user.id, text=dm_text, reply_markup=reply_markup)
+        logger.info(f"Sent CoC DM to user {user.id}")
+        return
+    except Exception:
+        pass
+
+    logger.warning(f"Could not DM user {user.id}, posting group fallback")
+    try:
+        sent = await context.bot.send_message(
+            chat_id=chat.id,
+            text=group_text,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.error(f"Failed to send group fallback for user {user.id}: {e}")
+        return
+
+    # Replace any earlier prompt for this user so the chat doesn't fill up.
+    await _delete_fallback(context, chat.id, user.id)
+    context.bot_data.setdefault('fallbacks', {})[(chat.id, user.id)] = sent.message_id
+    context.application.create_task(_delete_message_later(context, chat.id, user.id, sent.message_id))
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Hello! I am the Code of Conduct bot for your group. "
@@ -73,6 +137,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _is_in_chat(member) -> bool:
+    if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+        return True
+    # A restricted user may or may not currently be in the chat.
+    return member.status == ChatMemberStatus.RESTRICTED and member.is_member
+
+
 async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.chat_member:
         return
@@ -80,81 +151,87 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     new_member = update.chat_member.new_chat_member
     old_member = update.chat_member.old_chat_member
 
-    if (old_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED] and
-        new_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED]):
+    if _is_in_chat(old_member) or not _is_in_chat(new_member):
+        return
 
-        user = new_member.user
-        chat = update.effective_chat
+    user = new_member.user
+    chat = update.effective_chat
 
-        if user.is_bot:
-            return
+    if user.is_bot or is_admin(user.id):
+        return
+    if new_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+        return
 
-        if storage_manager.has_agreed(user.id, chat.id, _active_coc_version):
-            logger.info(f"Re-joining member {user.id} has already agreed.")
-            return
+    agreed = storage_manager.has_agreed(user.id, chat.id, _active_coc_version)
+    if agreed is None:
+        logger.warning(f"DB unavailable, not restricting new member {user.id} in {chat.id}")
+        return
+    if agreed:
+        logger.info(f"Re-joining member {user.id} has already agreed.")
+        return
 
-        if DRY_RUN:
-            logger.info(f"[DRY RUN] Would restrict new member {user.id} in chat {chat.id}")
-            return
+    if DRY_RUN:
+        logger.info(f"[DRY RUN] Would restrict new member {user.id} in chat {chat.id}")
+        return
 
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id=chat.id,
-                user_id=user.id,
-                permissions=ChatPermissions(can_send_messages=False)
-            )
-            logger.info(f"Restricted new member {user.id} in chat {chat.id}")
-        except Exception as e:
-            logger.error(f"Failed to restrict new member {user.id}: {e}")
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat.id,
+            user_id=user.id,
+            permissions=ChatPermissions(can_send_messages=False)
+        )
+        logger.info(f"Restricted new member {user.id} in chat {chat.id}")
+    except Exception as e:
+        logger.error(f"Failed to restrict new member {user.id}: {e}")
 
-        if storage_manager.has_agreed_anywhere(user.id, _active_coc_version):
-            reply_markup = _coc_confirm_keyboard(chat.id)
-            dm_text = (
-                f"Welcome to '{chat.title}'! 👋\n\n"
-                f"You've already agreed to the CoC in another group. "
-                f"Tap below to confirm it applies here too.\n\n"
-                f"🇩🇪 Willkommen bei '{chat.title}'! 👋\n\n"
-                f"Du hast dem Verhaltenskodex bereits in einer anderen Gruppe zugestimmt. "
-                f"Tippe unten, um zu bestätigen, dass er auch hier gilt."
-            )
-            group_text = (
-                f"Welcome {user.mention_html()}! 👋 "
-                f"Tap below to confirm your CoC agreement for this group (you've agreed before).\n"
-                f"🇩🇪 Tippe unten, um deine Zustimmung zum Verhaltenskodex für diese Gruppe zu bestätigen."
-            )
-        else:
-            reply_markup = _coc_agree_keyboard(chat.id)
-            dm_text = (
-                f"Welcome to '{chat.title}'! 👋\n\n"
-                f"Before you can post, please read the Code of Conduct and click Agree.\n\n"
-                f"🇩🇪 Willkommen bei '{chat.title}'! 👋\n\n"
-                f"Bevor du schreiben kannst, lies bitte den Verhaltenskodex und klicke auf Zustimmen."
-            )
-            group_text = (
-                f"Welcome {user.mention_html()}! 👋 "
-                f"Please read the Code of Conduct and click Agree before posting.\n"
-                f"🇩🇪 Bitte lies den Verhaltenskodex und klicke auf Zustimmen, bevor du schreibst."
-            )
+    if storage_manager.has_agreed_anywhere(user.id, _active_coc_version):
+        reply_markup = _coc_confirm_keyboard(chat.id)
+        dm_text = (
+            f"Welcome to '{chat.title}'! 👋\n\n"
+            f"You've already agreed to the CoC in another group. "
+            f"Tap below to confirm it applies here too.\n\n"
+            f"🇩🇪 Willkommen bei '{chat.title}'! 👋\n\n"
+            f"Du hast dem Verhaltenskodex bereits in einer anderen Gruppe zugestimmt. "
+            f"Tippe unten, um zu bestätigen, dass er auch hier gilt."
+        )
+        group_text = (
+            f"Welcome {user.mention_html()}! 👋 "
+            f"Tap below to confirm your CoC agreement for this group (you've agreed before).\n"
+            f"🇩🇪 Tippe unten, um deine Zustimmung zum Verhaltenskodex für diese Gruppe zu bestätigen."
+        )
+    else:
+        reply_markup = _coc_agree_keyboard(chat.id)
+        dm_text = (
+            f"Welcome to '{chat.title}'! 👋\n\n"
+            f"Before you can post, please read the Code of Conduct and click Agree.\n\n"
+            f"🇩🇪 Willkommen bei '{chat.title}'! 👋\n\n"
+            f"Bevor du schreiben kannst, lies bitte den Verhaltenskodex und klicke auf Zustimmen."
+        )
+        group_text = (
+            f"Welcome {user.mention_html()}! 👋 "
+            f"Please read the Code of Conduct and click Agree before posting.\n"
+            f"🇩🇪 Bitte lies den Verhaltenskodex und klicke auf Zustimmen, bevor du schreibst."
+        )
 
-        dm_sent = False
-        try:
-            await context.bot.send_message(chat_id=user.id, text=dm_text, reply_markup=reply_markup)
-            dm_sent = True
-            logger.info(f"Sent CoC DM to new member {user.id}")
-        except Exception:
-            pass
+    await _send_coc_prompt(context, user, chat, dm_text, group_text, reply_markup)
 
-        if not dm_sent:
-            logger.warning(f"Could not DM new member {user.id}, posting group fallback")
-            try:
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=group_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.error(f"Failed to send group fallback for new member {user.id}: {e}")
+
+async def _unrestrict(context: ContextTypes.DEFAULT_TYPE, group_id: int, user_id: int) -> bool:
+    if DRY_RUN:
+        logger.info(f"[DRY RUN] Would unrestrict user {user_id} in chat {group_id}")
+        return True
+    try:
+        # Granting every permission lifts the restriction entirely; the group's defaults then apply.
+        await context.bot.restrict_chat_member(
+            chat_id=group_id,
+            user_id=user_id,
+            permissions=ChatPermissions.all_permissions()
+        )
+        logger.info(f"Unrestricted user {user_id} in chat {group_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to unrestrict user {user_id}: {e}")
+        return False
 
 
 async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -175,6 +252,9 @@ async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if storage_manager.has_agreed(user.id, group_id, _active_coc_version):
+        # Still lift any restriction, in case the user was restricted while their agreement existed.
+        await _unrestrict(context, group_id, user.id)
+        await _delete_fallback(context, group_id, user.id)
         await query.answer(
             "You have already agreed! / Du hast bereits zugestimmt!",
             show_alert=True, cache_time=60
@@ -205,33 +285,20 @@ async def handle_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    if not DRY_RUN:
-        try:
-            await context.bot.restrict_chat_member(
-                chat_id=group_id,
-                user_id=user.id,
-                permissions=ChatPermissions(
-                    can_send_messages=True, can_send_audios=True, can_send_documents=True,
-                    can_send_photos=True, can_send_videos=True, can_send_video_notes=True,
-                    can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True,
-                    can_add_web_page_previews=True, can_change_info=True, can_invite_users=True,
-                    can_pin_messages=True
-                )
-            )
-            logger.info(f"Unrestricted user {user.id} in chat {group_id}")
-        except Exception as e:
-            logger.error(f"Failed to unrestrict user {user.id}: {e}")
-            await query.answer(
-                "Agreement recorded, but failed to update permissions. Please contact an admin. / "
-                "Zustimmung gespeichert, aber Berechtigungen konnten nicht aktualisiert werden. "
-                "Bitte Admin kontaktieren.",
-                show_alert=True
-            )
-            return
+    if not await _unrestrict(context, group_id, user.id):
+        await query.answer(
+            "Agreement recorded, but failed to update permissions. Please contact an admin. / "
+            "Zustimmung gespeichert, aber Berechtigungen konnten nicht aktualisiert werden. "
+            "Bitte Admin kontaktieren.",
+            show_alert=True
+        )
+        return
 
+    await _delete_fallback(context, group_id, user.id)
+    name = _short_name(group_name)
     await query.answer(
-        f"You're all set! You can now post in '{group_name}'. 🎉\n"
-        f"🇩🇪 Alles klar! Du kannst jetzt in '{group_name}' schreiben. 🎉",
+        f"You're all set! You can now post in '{name}'. 🎉\n"
+        f"🇩🇪 Alles klar! Du kannst jetzt in '{name}' schreiben. 🎉",
         show_alert=True
     )
 
@@ -305,8 +372,39 @@ async def set_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+async def _handle_sender_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Messages sent on behalf of a chat: allow anonymous admins and the linked channel, delete the rest."""
+    chat = update.effective_chat
+    message = update.effective_message
+    sender_chat = message.sender_chat
+
+    if sender_chat.id == chat.id or message.is_automatic_forward:
+        return  # anonymous group admin, or a post relayed from the linked channel
+    try:
+        full_chat = await context.bot.get_chat(chat.id)
+        if sender_chat.id == full_chat.linked_chat_id:
+            return  # someone commenting as the group's own linked channel
+    except Exception as e:
+        logger.error(f"Failed to get linked chat for {chat.id}: {e}")
+        return
+
+    logger.info(f"Gatekeeper: blocking post as channel {sender_chat.id} in chat={chat.id}")
+    if DRY_RUN:
+        logger.info(f"[DRY RUN] Would delete post as channel {sender_chat.id} in {chat.id}")
+        return
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Failed to delete post as channel {sender_chat.id}: {e}")
+    raise ApplicationHandlerStop
+
+
 async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Delete messages and restrict users who haven't agreed to the CoC."""
+    """Delete messages and restrict users who haven't agreed to the CoC.
+
+    Runs before all other handlers; raises ApplicationHandlerStop when it blocks a message
+    so that commands from non-agreed users are not processed either.
+    """
     user = update.effective_user
     chat = update.effective_chat
     message = update.effective_message
@@ -315,9 +413,17 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     if chat.type not in ['group', 'supergroup']:
         return
-    if user.is_bot or is_admin(user.id):
+    if message.sender_chat:
+        await _handle_sender_chat(update, context)
         return
-    if storage_manager.has_agreed(user.id, chat.id, _active_coc_version):
+    if user.is_bot or is_admin(user.id) or user.id == TELEGRAM_SERVICE_USER_ID:
+        return
+
+    agreed = storage_manager.has_agreed(user.id, chat.id, _active_coc_version)
+    if agreed is None:
+        logger.warning(f"DB unavailable, letting message from {user.id} in {chat.id} through")
+        return
+    if agreed:
         return
 
     # Group admins/owners are exempt; Telegram refuses to restrict them anyway.
@@ -377,30 +483,19 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Bitte lies ihn und klicke auf Zustimmen."
         )
 
-    dm_sent = False
-    try:
-        await context.bot.send_message(chat_id=user.id, text=dm_text, reply_markup=reply_markup)
-        dm_sent = True
-        logger.info(f"Sent CoC DM to user {user.id}")
-    except Exception:
-        pass
-
-    if not dm_sent:
-        logger.warning(f"Could not DM user {user.id}, posting group fallback")
-        try:
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=group_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        except Exception as e:
-            logger.error(f"Failed to send group fallback for user {user.id}: {e}")
+    await _send_coc_prompt(context, user, chat, dm_text, group_text, reply_markup)
+    raise ApplicationHandlerStop
 
 
 def main() -> None:
     """Start the bot."""
     application = Application.builder().token(BOT_TOKEN).build()
+
+    # Gatekeeper runs first (group -1) on every message, commands included, so "/text" can't bypass it.
+    # Service messages (joins, leaves, pins, ...) are excluded: joins are handled by handle_new_member.
+    application.add_handler(
+        MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, gatekeeper_handler), group=-1
+    )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("whoagreed", who_agreed))
@@ -409,11 +504,6 @@ def main() -> None:
 
     application.add_handler(CallbackQueryHandler(handle_agreement, pattern="^(agree|confirm)_"))
     application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
-    # Service messages (joins, leaves, pins, ...) are excluded: joins are handled by handle_new_member,
-    # and gatekeeping them would delete the join notice and DM the new member a second time.
-    application.add_handler(MessageHandler(
-        filters.ALL & ~filters.COMMAND & ~filters.StatusUpdate.ALL, gatekeeper_handler
-    ))
 
     if WEBHOOK_URL:
         url_path = BOT_TOKEN  # token as URL path provides basic request authentication

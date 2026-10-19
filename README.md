@@ -94,6 +94,13 @@ python3 bot.py
 
 Leave `WEBHOOK_URL` unset and the bot uses polling. Don't run a local instance with the production token while the Railway service is up: two pollers on one token conflict.
 
+## Enforcement Details
+
+- Commands count as messages: a non-agreed user's `/anything` is deleted like any other message.
+- If the database can't be reached, the gatekeeper lets messages through (fail open) rather than restricting everyone.
+- Posts relayed from the group's linked channel, anonymous admins, and comments as the linked channel are allowed. Posting as any other channel is deleted.
+- Group fallback prompts are deleted when the user agrees, or after 5 minutes.
+
 ## Known Limitations
 
 - **Message visibility**: Telegram delivers messages to all clients before the bot can delete them (~0.5–2s). Mobile push notifications fire with the message content before the delete. This is a hard Telegram API constraint.

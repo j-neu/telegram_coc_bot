@@ -61,6 +61,10 @@ Triggered on every message in a managed group.
 - [x] If agreed: do nothing, message stands
 - [x] Skip group admins/owners and `ADMIN_IDS` users (Telegram can't restrict admins)
 - [x] Skip service messages (joins, leaves, pins) so new members aren't handled twice
+- [x] Run before command handlers (group -1) so `/text` from non-agreed users is deleted too
+- [x] Fail open when the database is unreachable
+- [x] Allow linked-channel relays, anonymous admins, and the linked channel; delete posts as other channels
+- [x] Delete group fallback prompts on agreement or after 5 minutes
 - [x] All user-facing messages are bilingual (English + German)
 
 **Note:** Telegram delivers messages to all clients before the bot can delete them (~0.5–2s window). Mobile push notifications will have already fired with the message content. This is a hard API limitation — delete-fast is the only option.

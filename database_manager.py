@@ -2,7 +2,7 @@
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import psycopg2
 import psycopg2.extras
@@ -109,7 +109,8 @@ class DatabaseManager:
             logger.error(f"record_agreement failed: {e}")
             return False
 
-    def has_agreed(self, user_id: int, group_id: int, version: str = COC_VERSION) -> bool:
+    def has_agreed(self, user_id: int, group_id: int, version: str = COC_VERSION) -> Optional[bool]:
+        """Return None if the database could not be queried, so callers can fail open."""
         try:
             with self._conn() as conn:
                 with conn.cursor() as cur:
@@ -120,7 +121,7 @@ class DatabaseManager:
                     return cur.fetchone() is not None
         except Exception as e:
             logger.error(f"has_agreed failed: {e}")
-            return False
+            return None
 
     def has_agreed_anywhere(self, user_id: int, version: str = COC_VERSION) -> bool:
         """Return True if user has agreed in any group under the given version."""
