@@ -28,6 +28,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+# httpx logs every request URL at INFO, and Telegram API URLs contain the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 if DRY_RUN:
     logger.warning("=" * 60)
@@ -318,6 +320,14 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if storage_manager.has_agreed(user.id, chat.id, _active_coc_version):
         return
 
+    # Group admins/owners are exempt; Telegram refuses to restrict them anyway.
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            return
+    except Exception as e:
+        logger.error(f"Failed to get member status for {user.id} in {chat.id}: {e}")
+
     logger.info(f"Gatekeeper: blocking user={user.id} in chat={chat.id}")
 
     if DRY_RUN:
@@ -399,7 +409,11 @@ def main() -> None:
 
     application.add_handler(CallbackQueryHandler(handle_agreement, pattern="^(agree|confirm)_"))
     application.add_handler(ChatMemberHandler(handle_new_member, ChatMemberHandler.CHAT_MEMBER))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, gatekeeper_handler))
+    # Service messages (joins, leaves, pins, ...) are excluded: joins are handled by handle_new_member,
+    # and gatekeeping them would delete the join notice and DM the new member a second time.
+    application.add_handler(MessageHandler(
+        filters.ALL & ~filters.COMMAND & ~filters.StatusUpdate.ALL, gatekeeper_handler
+    ))
 
     if WEBHOOK_URL:
         url_path = BOT_TOKEN  # token as URL path provides basic request authentication

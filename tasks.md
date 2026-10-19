@@ -4,7 +4,7 @@
 
 - [x] Create bot via [@BotFather](https://t.me/BotFather), get token
 - [x] Create Railway project, add PostgreSQL plugin
-- [x] Configure environment variables (WEBHOOK_URL set after first deploy):
+- [x] Configure environment variables (production runs in polling mode, so WEBHOOK_URL is not set):
   ```
   BOT_TOKEN=<telegram-bot-token>
   ADMIN_IDS=<comma-separated-admin-user-ids>
@@ -59,6 +59,8 @@ Triggered on every message in a managed group.
   3. Check `has_agreed_anywhere` — send fast-path confirm if true, full CoC DM if false
   4. If DM fails (user has privacy settings blocking unknown bots): post inline message in the group tagging the user
 - [x] If agreed: do nothing, message stands
+- [x] Skip group admins/owners and `ADMIN_IDS` users (Telegram can't restrict admins)
+- [x] Skip service messages (joins, leaves, pins) so new members aren't handled twice
 - [x] All user-facing messages are bilingual (English + German)
 
 **Note:** Telegram delivers messages to all clients before the bot can delete them (~0.5–2s window). Mobile push notifications will have already fired with the message content. This is a hard API limitation — delete-fast is the only option.
@@ -114,7 +116,8 @@ All commands restricted to user IDs in `ADMIN_IDS`.
 - [x] Create `Procfile` with `web: python bot.py` (web process type so Railway assigns a public port)
 - [x] PostgreSQL data persists across deploys via Railway plugin (no ephemeral filesystem risk)
 - [x] Bot restarts automatically on crash via Railway's always-on service
-- [x] Webhooks when `WEBHOOK_URL` is set (uses bot token as URL path for basic auth); falls back to polling for local dev
+- [x] Polling by default (production); webhooks when `WEBHOOK_URL` is set (uses bot token as URL path for basic auth)
+- [x] httpx request logging silenced to WARNING so the bot token never appears in logs
 
 ---
 

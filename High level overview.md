@@ -109,7 +109,7 @@ Helper functions: `get_setting`, `set_setting`
 
 ## Deployment (Railway)
 
-- Polling-based (not webhooks) — Railway provides always-on uptime
+- Polling-based by default — Railway provides always-on uptime (webhook mode is available by setting `WEBHOOK_URL`, but production does not use it)
 - PostgreSQL plugin provides managed, persistent database — no ephemeral filesystem risk
 - Always-on service with automatic restart on crash
 - Environment variables set in Railway dashboard

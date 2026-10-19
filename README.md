@@ -4,7 +4,7 @@ A Telegram bot that ensures every group member explicitly agrees to the group's 
 
 ## How It Works
 
-1. **Gatekeeper**: Every message is checked. If the sender hasn't agreed to the current CoC, their message is deleted, they're restricted, and the bot contacts them.
+1. **Gatekeeper**: Every message is checked. If the sender hasn't agreed to the current CoC, their message is deleted, they're restricted, and the bot contacts them. Group admins/owners and users in `ADMIN_IDS` are exempt.
 2. **New members**: Anyone who joins a managed group is immediately restricted until they agree.
 3. **Agreement**: Users receive a bilingual DM with links to the CoC in both languages and an Agree button. If their DMs are blocked, the bot posts inline in the group instead. One tap records their agreement and restores posting permissions.
 4. **Cross-group**: Users who've already agreed in another group see a one-tap confirm instead of the full CoC flow.
@@ -34,9 +34,10 @@ COC_VERSION=1.0
 COC_LINK=https://your-code-of-conduct-url-english
 COC_LINK_DE=https://your-code-of-conduct-url-german
 DATABASE_URL=${{Postgres.DATABASE_URL}}  # auto-filled by Railway plugin
-WEBHOOK_URL=https://your-app.railway.app
 DRY_RUN=false
 ```
+
+The bot uses long polling by default (this is how the production service runs). Setting `WEBHOOK_URL` to a public HTTPS domain switches it to webhook mode instead; the service then needs a Railway public domain.
 
 **Note on `COC_VERSION`**: This env var sets the initial version on first deploy. After that, use `/setversion` in the group — the active version is stored in PostgreSQL and persists across restarts.
 
@@ -91,7 +92,7 @@ Run:
 python3 bot.py
 ```
 
-Omit `WEBHOOK_URL` in `.env` for local development — the bot falls back to polling automatically.
+Leave `WEBHOOK_URL` unset and the bot uses polling. Don't run a local instance with the production token while the Railway service is up: two pollers on one token conflict.
 
 ## Known Limitations
 
