@@ -94,6 +94,26 @@ PRIMARY KEY (user_id, group_id, coc_version)
 
 Helper functions: `record_agreement`, `has_agreed`, `has_agreed_anywhere`, `get_all_agreed`
 
+### `blocked_messages` table
+
+One row per message (or edit) the gatekeeper blocked, recorded in dry-run mode too. Rows older than 14 days are pruned on each insert, since message contents are personal data.
+
+```
+id            BIGSERIAL PRIMARY KEY
+user_id       BIGINT
+username      TEXT
+full_name     TEXT
+group_id      BIGINT
+message_id    BIGINT
+message_type  TEXT        -- text, sticker, photo, ...
+is_edit       BOOLEAN     -- true if the user edited an older message
+content       TEXT        -- text, caption, or sticker emoji
+dry_run       BOOLEAN
+blocked_at    TIMESTAMPTZ
+```
+
+Helper function: `record_blocked_message`
+
 ### `settings` table
 
 Stores bot-wide persistent configuration (currently: active CoC version).

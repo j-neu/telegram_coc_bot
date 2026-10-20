@@ -13,6 +13,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ChatMemberStatus
+from telegram.helpers import effective_message_type
 
 import config
 from config import (
@@ -136,6 +137,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "You can agree to the CoC by clicking the 'Agree' button on the pinned message in your group.\n\n"
         "🇩🇪 Hallo! Ich bin der Verhaltenskodex-Bot für diese Gruppe. "
         "Du kannst dem Verhaltenskodex zustimmen, indem du in der Gruppe auf den 'Zustimmen'-Button klickst."
+    )
+
+
+def _record_blocked(update: Update, sender_id: int, username: str, full_name: str) -> None:
+    """Log a one-line summary of a blocked message and store it in the database."""
+    message = update.effective_message
+    is_edit = update.edited_message is not None
+    message_type = str(effective_message_type(message) or 'unknown')
+    content = message.text or message.caption or (message.sticker.emoji if message.sticker else None) or ''
+    preview = content[:100].replace('\n', ' ')
+    logger.info(
+        f"Blocked {'edit' if is_edit else 'message'}: user={sender_id} chat={update.effective_chat.id} "
+        f"type={message_type} content={preview!r}"
+    )
+    storage_manager.record_blocked_message(
+        user_id=sender_id,
+        username=username,
+        full_name=full_name,
+        group_id=update.effective_chat.id,
+        message_id=message.message_id,
+        message_type=message_type,
+        is_edit=is_edit,
+        content=content,
+        dry_run=DRY_RUN,
     )
 
 
@@ -397,6 +422,7 @@ async def _handle_sender_chat(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     logger.info(f"Gatekeeper: blocking post as channel {sender_chat.id} in chat={chat.id}")
+    _record_blocked(update, sender_chat.id, sender_chat.username or '', sender_chat.title or '')
     if DRY_RUN:
         logger.info(f"[DRY RUN] Would delete post as channel {sender_chat.id} in {chat.id}")
         return
@@ -443,6 +469,7 @@ async def gatekeeper_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Failed to get member status for {user.id} in {chat.id}: {e}")
 
     logger.info(f"Gatekeeper: blocking user={user.id} in chat={chat.id}")
+    _record_blocked(update, user.id, user.username or '', user.full_name or '')
 
     if DRY_RUN:
         logger.info(f"[DRY RUN] Would delete message and restrict user {user.id} in {chat.id}")

@@ -11,6 +11,9 @@ from config import COC_VERSION, DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
+# Blocked message contents are personal data; keep them only briefly.
+BLOCKED_MESSAGE_RETENTION_DAYS = 14
+
 
 class DatabaseManager:
 
@@ -48,6 +51,21 @@ class DatabaseManager:
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_agreements_user_group
                     ON agreements (user_id, group_id)
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blocked_messages (
+                        id           BIGSERIAL PRIMARY KEY,
+                        user_id      BIGINT NOT NULL,
+                        username     TEXT,
+                        full_name    TEXT,
+                        group_id     BIGINT NOT NULL,
+                        message_id   BIGINT,
+                        message_type TEXT,
+                        is_edit      BOOLEAN NOT NULL,
+                        content      TEXT,
+                        dry_run      BOOLEAN NOT NULL,
+                        blocked_at   TIMESTAMPTZ NOT NULL
+                    )
                 """)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS settings (
@@ -107,6 +125,38 @@ class DatabaseManager:
             return True
         except Exception as e:
             logger.error(f"record_agreement failed: {e}")
+            return False
+
+    def record_blocked_message(
+        self,
+        user_id: int,
+        username: str,
+        full_name: str,
+        group_id: int,
+        message_id: int,
+        message_type: str,
+        is_edit: bool,
+        content: str,
+        dry_run: bool,
+    ) -> bool:
+        """Store a blocked message and prune entries older than the retention period."""
+        try:
+            with self._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO blocked_messages
+                            (user_id, username, full_name, group_id, message_id, message_type,
+                             is_edit, content, dry_run, blocked_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (user_id, username or '', full_name or '', group_id, message_id, message_type,
+                          is_edit, content, dry_run, datetime.now(timezone.utc)))
+                    cur.execute(
+                        "DELETE FROM blocked_messages WHERE blocked_at < now() - make_interval(days => %s)",
+                        (BLOCKED_MESSAGE_RETENTION_DAYS,)
+                    )
+            return True
+        except Exception as e:
+            logger.error(f"record_blocked_message failed: {e}")
             return False
 
     def has_agreed(self, user_id: int, group_id: int, version: str = COC_VERSION) -> Optional[bool]:
